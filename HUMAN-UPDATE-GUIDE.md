@@ -41,6 +41,8 @@ This is the practical guide for you (or any teammate) to safely update the plugi
 - User profile shows the next available number under the field.
 - Manager grid uses buyer number text input and resolves to a WP user.
 - If sold price is entered (> 0), item status is auto-set to `sold` unless withdrawn.
+- In Manager Item Grid, once a row is saved as `sold`, a `Quick Add Next` button appears on that row.
+- `Quick Add Next` creates a new item immediately under the sold row (same auction) so clerks can continue live flow without leaving the grid.
 - Buyer Totals & Receipts defaults every buyer row to `Unpaid` until you save payment status.
 - Receipt popup payment settings are persistent (Paid Status, method checkboxes, and check number).
 
@@ -65,6 +67,18 @@ This is the practical guide for you (or any teammate) to safely update the plugi
    - include it in AJAX payload in `assets/js/admin-grid.js`
    - validate/save in `includes/admin/ajax.php`
 4. If needed on public pages, add to templates in `templates/`.
+
+### A2) Adjust Quick Add behavior in Manager Grid
+
+1. UI and client flow live in `assets/js/admin-grid.js`.
+2. Grid row auction context + localized quick-add strings/nonces come from `includes/admin/manager-grid.php`.
+3. Server creation endpoint is `wp_ajax_bsync_auction_quick_add_item` in `includes/admin/ajax.php`.
+4. Keep these guarantees unless intentionally changing product behavior:
+   - quick-add appears only after a successful sold row save
+   - new row is inserted directly after that sold row
+   - new item is assigned to the same auction
+   - fixed item number is auto-generated and unique
+5. If you change quick-add payload fields, update both PHP response and JS row renderer together.
 
 ### B) Change buyer number behavior
 
@@ -145,11 +159,20 @@ If your repo is private, define `BSYNC_AUCTION_GITHUB_TOKEN` in wp-config or a s
    - status
    - opening/current/sold price
 4. Verify sold-price auto-status to sold.
-5. Edit a user and test Auction buyer number field:
+5. Verify sold-row quick add flow:
+   - save a row as sold
+   - confirm `Quick Add Next` appears
+   - quick-add a title and confirm row is inserted directly below sold row
+   - confirm new row starts as available, no buyer, zero prices
+6. Verify auction filter flow on Manager Grid:
+   - choose auction and click filter
+   - confirm page loads on `admin.php?page=bsync-auction-manager-grid&auction_id=...`
+   - confirm no `Sorry, you are not allowed to access this page` error
+7. Edit a user and test Auction buyer number field:
    - uniqueness blocks duplicate values
    - next available number displays
-6. Visit public auction and item pages for rendering/sorting sanity.
-7. Run PHP lint on changed files.
+8. Visit public auction and item pages for rendering/sorting sanity.
+9. Run PHP lint on changed files.
 
 ## 8) Useful commands
 

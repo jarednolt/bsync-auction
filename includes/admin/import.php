@@ -13,7 +13,7 @@ add_action( 'admin_notices', 'bsync_auction_render_items_list_import_notice' );
  * @return void
  */
 function bsync_auction_render_admin_tabs() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         return;
     }
 
@@ -62,7 +62,7 @@ function bsync_auction_render_admin_tabs() {
  * @return void
  */
 function bsync_auction_render_items_list_import_notice() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         return;
     }
 
@@ -73,8 +73,32 @@ function bsync_auction_render_items_list_import_notice() {
 
     $import_url = admin_url( 'admin.php?page=bsync-auction-import-items' );
 
+    $repair_results = array(
+        'ran'     => false,
+        'updated' => 0,
+        'message' => '',
+    );
+
+    if ( isset( $_POST['bsync_auction_repair_numbers_nonce'] ) ) {
+        $repair_nonce = sanitize_text_field( wp_unslash( $_POST['bsync_auction_repair_numbers_nonce'] ) );
+        if ( wp_verify_nonce( $repair_nonce, 'bsync_auction_repair_item_numbers' ) ) {
+            $repair_results = bsync_auction_repair_duplicate_item_numbers();
+        }
+    }
+
+    if ( ! empty( $repair_results['ran'] ) ) {
+        echo '<div class="notice notice-success" style="margin-top:12px;"><p>' . esc_html( (string) $repair_results['message'] ) . '</p></div>';
+    }
+
     echo '<div class="notice notice-info" style="margin-top:12px;">';
     echo '<p>' . esc_html__( 'Need to bulk add items?', 'bsync-auction' ) . ' <a class="button button-secondary" href="' . esc_url( $import_url ) . '">' . esc_html__( 'Import Items', 'bsync-auction' ) . '</a></p>';
+
+    echo '<form method="post" style="margin:10px 0 0;">';
+    wp_nonce_field( 'bsync_auction_repair_item_numbers', 'bsync_auction_repair_numbers_nonce' );
+    submit_button( __( 'Repair Duplicate Item Numbers', 'bsync-auction' ), 'secondary', 'submit', false );
+    echo ' <span class="description">' . esc_html__( 'Scans all auction items and reassigns any missing/duplicate fixed item numbers.', 'bsync-auction' ) . '</span>';
+    echo '</form>';
+
     echo '</div>';
 }
 
@@ -85,7 +109,7 @@ function bsync_auction_render_items_list_import_notice() {
  * Supports featured image via URL or attachment ID columns.
  */
 function bsync_auction_render_import_items_page() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
     }
 
@@ -207,6 +231,11 @@ function bsync_auction_process_item_import() {
             continue;
         }
 
+        if ( ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+            $result['errors'][] = sprintf( __( 'Line %d: you are not assigned to auction_id %d.', 'bsync-auction' ), $line_number, $auction_id );
+            continue;
+        }
+
         $status   = sanitize_key( $record['status'] ?? 'available' );
         $statuses = bsync_auction_get_item_statuses();
         if ( ! isset( $statuses[ $status ] ) ) {
@@ -246,6 +275,9 @@ function bsync_auction_process_item_import() {
             $result['errors'][] = sprintf( __( 'Line %d: failed to create item (%s).', 'bsync-auction' ), $line_number, $item_id->get_error_message() );
             continue;
         }
+
+        // Explicitly assign the next unique fixed item number during import.
+        update_post_meta( $item_id, 'bsync_auction_item_number', bsync_auction_generate_next_item_number() );
 
         update_post_meta( $item_id, 'bsync_auction_id', $auction_id );
         update_post_meta( $item_id, 'bsync_auction_order_number', $order_number );
@@ -298,4 +330,55 @@ function bsync_auction_import_set_featured_image( $item_id, $record, $line_numbe
     }
 
     set_post_thumbnail( $item_id, (int) $attachment_id );
+}
+
+/**
+ * Repair missing/duplicate fixed item numbers across all auction items.
+ *
+ * @return array<string,mixed>
+ */
+function bsync_auction_repair_duplicate_item_numbers() {
+    $items = get_posts(
+        array(
+            'post_type'      => BSYNC_AUCTION_ITEM_CPT,
+            'post_status'    => array( 'publish', 'draft', 'pending', 'future', 'private' ),
+            'posts_per_page' => -1,
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
+            'fields'         => 'ids',
+        )
+    );
+
+    $seen_numbers = array();
+    $updated      = 0;
+
+    foreach ( $items as $item_id ) {
+        $item_id = absint( $item_id );
+        if ( $item_id <= 0 ) {
+            continue;
+        }
+
+        $current = trim( (string) get_post_meta( $item_id, 'bsync_auction_item_number', true ) );
+        $is_duplicate = '' !== $current && isset( $seen_numbers[ $current ] );
+
+        if ( '' === $current || $is_duplicate ) {
+            $new_number = bsync_auction_generate_next_item_number();
+            update_post_meta( $item_id, 'bsync_auction_item_number', $new_number );
+            $seen_numbers[ $new_number ] = true;
+            $updated++;
+            continue;
+        }
+
+        $seen_numbers[ $current ] = true;
+    }
+
+    return array(
+        'ran'     => true,
+        'updated' => $updated,
+        'message' => sprintf(
+            /* translators: %d number of updated items */
+            __( 'Item number repair complete. Updated %d item(s).', 'bsync-auction' ),
+            (int) $updated
+        ),
+    );
 }

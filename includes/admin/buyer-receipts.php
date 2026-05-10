@@ -137,6 +137,13 @@ function bsync_auction_enqueue_buyer_receipt_assets( $hook ) {
         return;
     }
 
+    wp_enqueue_style(
+        'bsync-auction-buyer-receipts-admin',
+        BSYNC_AUCTION_PLUGIN_URL . 'assets/css/admin-buyer-receipts.css',
+        array(),
+        BSYNC_AUCTION_VERSION
+    );
+
     wp_enqueue_script(
         'bsync-auction-buyer-receipts',
         BSYNC_AUCTION_PLUGIN_URL . 'assets/js/admin-buyers.js',
@@ -149,13 +156,15 @@ function bsync_auction_enqueue_buyer_receipt_assets( $hook ) {
         'bsync-auction-buyer-receipts',
         'BsyncAuctionBuyerReceipts',
         array(
-            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-            'nonce'   => wp_create_nonce( 'bsync_auction_send_buyer_receipt' ),
-            'sending' => __( 'Sending receipt...', 'bsync-auction' ),
-            'sent'    => __( 'Receipt emailed successfully.', 'bsync-auction' ),
-            'failed'  => __( 'Could not send receipt.', 'bsync-auction' ),
-            'saving'  => __( 'Saving payment status...', 'bsync-auction' ),
-            'saved'   => __( 'Payment status saved.', 'bsync-auction' ),
+            'ajaxUrl'    => admin_url( 'admin-ajax.php' ),
+            'nonce'      => wp_create_nonce( 'bsync_auction_send_buyer_receipt' ),
+            'printTitle' => __( 'Receipt', 'bsync-auction' ),
+            'printCssUrl' => apply_filters( 'bsync_auction_receipt_print_css_url', BSYNC_AUCTION_PLUGIN_URL . 'assets/css/receipt-print.css' ),
+            'sending'    => __( 'Sending receipt...', 'bsync-auction' ),
+            'sent'       => __( 'Receipt emailed successfully.', 'bsync-auction' ),
+            'failed'     => __( 'Could not send receipt.', 'bsync-auction' ),
+            'saving'     => __( 'Saving payment status...', 'bsync-auction' ),
+            'saved'      => __( 'Payment status saved.', 'bsync-auction' ),
             'saveFailed' => __( 'Could not save payment status.', 'bsync-auction' ),
         )
     );
@@ -167,7 +176,7 @@ function bsync_auction_enqueue_buyer_receipt_assets( $hook ) {
  * @return void
  */
 function bsync_auction_render_buyer_receipts_page() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
     }
 
@@ -182,6 +191,12 @@ function bsync_auction_render_buyer_receipts_page() {
             'order'          => 'ASC',
         )
     );
+
+    $auctions = bsync_auction_filter_auctions_by_scope( $auctions );
+
+    if ( $auction_filter > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_filter ) ) {
+        $auction_filter = 0;
+    }
 
     $buyers = bsync_auction_collect_buyer_receipt_data( $auction_filter );
 
@@ -270,11 +285,19 @@ function bsync_auction_collect_buyer_receipt_data( $auction_filter = 0 ) {
         );
     }
 
+    $query = bsync_auction_apply_scope_to_item_query_args( $query );
+
     $items  = get_posts( $query );
     $buyers = array();
 
     foreach ( $items as $item ) {
         $item_id   = (int) $item->ID;
+        $auction_id = (int) get_post_meta( $item_id, 'bsync_auction_id', true );
+
+        if ( $auction_id > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+            continue;
+        }
+
         $buyer_id  = (int) get_post_meta( $item_id, 'bsync_auction_buyer_id', true );
         $sold      = (float) get_post_meta( $item_id, 'bsync_auction_sold_price_internal', true );
         $status    = (string) get_post_meta( $item_id, 'bsync_auction_item_status', true );
@@ -303,10 +326,11 @@ function bsync_auction_collect_buyer_receipt_data( $auction_filter = 0 ) {
         $buyers[ $buyer_id ]['total'] += $sold;
         $buyers[ $buyer_id ]['items'][] = array(
             'item_id'      => $item_id,
+            'auction_id'   => $auction_id,
             'item_number'  => (string) get_post_meta( $item_id, 'bsync_auction_item_number', true ),
             'title'        => get_the_title( $item_id ),
             'sold_price'   => $sold,
-            'auction_name' => get_the_title( (int) get_post_meta( $item_id, 'bsync_auction_id', true ) ),
+            'auction_name' => get_the_title( $auction_id ),
         );
     }
 
@@ -321,6 +345,79 @@ function bsync_auction_collect_buyer_receipt_data( $auction_filter = 0 ) {
 }
 
 /**
+ * Build receipt auction context details for display.
+ *
+ * @param int $auction_filter Active auction filter.
+ * @return array<string,string>
+ */
+function bsync_auction_get_receipt_auction_context( $auction_filter ) {
+    $auction_filter = absint( $auction_filter );
+
+    $context = array(
+        'name'      => __( 'All Auctions', 'bsync-auction' ),
+        'location'  => '',
+        'auctioneers' => '',
+        'address'   => '',
+        'dateRange' => '',
+    );
+
+    if ( $auction_filter <= 0 ) {
+        return $context;
+    }
+
+    if ( BSYNC_AUCTION_AUCTION_CPT !== get_post_type( $auction_filter ) ) {
+        return $context;
+    }
+
+    $context['name']     = (string) get_the_title( $auction_filter );
+    $context['location'] = (string) get_post_meta( $auction_filter, 'bsync_auction_location', true );
+    $context['address']  = (string) get_post_meta( $auction_filter, 'bsync_auction_address', true );
+
+    $auctioneer_names = array();
+
+    $primary_auctioneer_id = (int) get_post_meta( $auction_filter, 'bsync_auction_auctioneer_id', true );
+    if ( $primary_auctioneer_id > 0 ) {
+        $primary_auctioneer = get_user_by( 'id', $primary_auctioneer_id );
+        if ( $primary_auctioneer instanceof WP_User ) {
+            $auctioneer_names[ $primary_auctioneer_id ] = $primary_auctioneer->display_name;
+        }
+    }
+
+    $assigned_auctioneers = bsync_auction_get_assignments_for_auction( $auction_filter, 'auctioneer' );
+    foreach ( $assigned_auctioneers as $assignment ) {
+        $user_id = absint( $assignment['user_id'] ?? 0 );
+        if ( $user_id <= 0 || isset( $auctioneer_names[ $user_id ] ) ) {
+            continue;
+        }
+
+        $auctioneer_user = get_user_by( 'id', $user_id );
+        if ( $auctioneer_user instanceof WP_User ) {
+            $auctioneer_names[ $user_id ] = $auctioneer_user->display_name;
+        }
+    }
+
+    if ( ! empty( $auctioneer_names ) ) {
+        $context['auctioneers'] = implode( ', ', array_values( $auctioneer_names ) );
+    }
+
+    $starts_at = (string) get_post_meta( $auction_filter, 'bsync_auction_starts_at', true );
+    $ends_at   = (string) get_post_meta( $auction_filter, 'bsync_auction_ends_at', true );
+
+    $start_ts = '' !== $starts_at ? strtotime( $starts_at ) : false;
+    $end_ts   = '' !== $ends_at ? strtotime( $ends_at ) : false;
+
+    if ( false !== $start_ts && false !== $end_ts ) {
+        $context['dateRange'] = wp_date( 'M j, Y g:i A', $start_ts ) . ' - ' . wp_date( 'M j, Y g:i A', $end_ts );
+    } elseif ( false !== $start_ts ) {
+        $context['dateRange'] = wp_date( 'M j, Y g:i A', $start_ts );
+    } elseif ( false !== $end_ts ) {
+        $context['dateRange'] = wp_date( 'M j, Y g:i A', $end_ts );
+    }
+
+    return $context;
+}
+
+/**
  * Render a modal for a buyer receipt.
  *
  * @param int   $buyer_id Buyer user ID.
@@ -331,6 +428,7 @@ function bsync_auction_collect_buyer_receipt_data( $auction_filter = 0 ) {
 function bsync_auction_render_buyer_receipt_modal( $buyer_id, $data, $auction_filter ) {
     $modal_id = 'bsync-auction-receipt-modal-' . $buyer_id;
     $item_ids = array();
+    $auction_context = bsync_auction_get_receipt_auction_context( $auction_filter );
     $payment_statuses = bsync_auction_get_receipt_payment_statuses();
     $payment = isset( $data['payment'] ) && is_array( $data['payment'] )
         ? $data['payment']
@@ -347,6 +445,22 @@ function bsync_auction_render_buyer_receipt_modal( $buyer_id, $data, $auction_fi
     echo '<h2>' . esc_html__( 'Buyer Receipt', 'bsync-auction' ) . '</h2>';
 
     echo '<div class="bsync-auction-receipt-printable">';
+    echo '<div class="bsync-auction-receipt-auction-info">';
+    echo '<p><strong>' . esc_html__( 'Auction:', 'bsync-auction' ) . '</strong> ' . esc_html( $auction_context['name'] ) . '</p>';
+    if ( '' !== $auction_context['location'] ) {
+        echo '<p><strong>' . esc_html__( 'Location:', 'bsync-auction' ) . '</strong> ' . esc_html( $auction_context['location'] ) . '</p>';
+    }
+    if ( '' !== $auction_context['auctioneers'] ) {
+        echo '<p><strong>' . esc_html__( 'Auctioneer(s):', 'bsync-auction' ) . '</strong> ' . esc_html( $auction_context['auctioneers'] ) . '</p>';
+    }
+    if ( '' !== $auction_context['address'] ) {
+        echo '<p><strong>' . esc_html__( 'Address:', 'bsync-auction' ) . '</strong> ' . esc_html( $auction_context['address'] ) . '</p>';
+    }
+    if ( '' !== $auction_context['dateRange'] ) {
+        echo '<p><strong>' . esc_html__( 'Auction Time:', 'bsync-auction' ) . '</strong> ' . esc_html( $auction_context['dateRange'] ) . '</p>';
+    }
+    echo '</div>';
+
     echo '<p><strong>' . esc_html__( 'Buyer:', 'bsync-auction' ) . '</strong> ' . esc_html( $data['display_name'] ) . '</p>';
     echo '<p><strong>' . esc_html__( 'Buyer Number:', 'bsync-auction' ) . '</strong> ' . esc_html( $data['buyer_number'] ) . '</p>';
     echo '<p><strong>' . esc_html__( 'Email:', 'bsync-auction' ) . '</strong> ' . esc_html( $data['email'] ) . '</p>';
@@ -408,14 +522,29 @@ function bsync_auction_render_buyer_receipt_modal( $buyer_id, $data, $auction_fi
  * @param WP_User $buyer Buyer user.
  * @param array   $items Item rows.
  * @param array   $payment Payment fields.
+ * @param int     $auction_filter Active auction filter.
  * @return string
  */
-function bsync_auction_build_receipt_email_html( $buyer, $items, $payment ) {
+function bsync_auction_build_receipt_email_html( $buyer, $items, $payment, $auction_filter = 0 ) {
     $total = 0;
+    $auction_context = bsync_auction_get_receipt_auction_context( $auction_filter );
 
     ob_start();
     ?>
     <h2><?php esc_html_e( 'Auction Receipt', 'bsync-auction' ); ?></h2>
+    <p><strong><?php esc_html_e( 'Auction:', 'bsync-auction' ); ?></strong> <?php echo esc_html( $auction_context['name'] ); ?></p>
+    <?php if ( '' !== $auction_context['location'] ) : ?>
+        <p><strong><?php esc_html_e( 'Location:', 'bsync-auction' ); ?></strong> <?php echo esc_html( $auction_context['location'] ); ?></p>
+    <?php endif; ?>
+    <?php if ( '' !== $auction_context['auctioneers'] ) : ?>
+        <p><strong><?php esc_html_e( 'Auctioneer(s):', 'bsync-auction' ); ?></strong> <?php echo esc_html( $auction_context['auctioneers'] ); ?></p>
+    <?php endif; ?>
+    <?php if ( '' !== $auction_context['address'] ) : ?>
+        <p><strong><?php esc_html_e( 'Address:', 'bsync-auction' ); ?></strong> <?php echo esc_html( $auction_context['address'] ); ?></p>
+    <?php endif; ?>
+    <?php if ( '' !== $auction_context['dateRange'] ) : ?>
+        <p><strong><?php esc_html_e( 'Auction Time:', 'bsync-auction' ); ?></strong> <?php echo esc_html( $auction_context['dateRange'] ); ?></p>
+    <?php endif; ?>
     <p><strong><?php esc_html_e( 'Buyer:', 'bsync-auction' ); ?></strong> <?php echo esc_html( $buyer->display_name ); ?></p>
     <p><strong><?php esc_html_e( 'Buyer Number:', 'bsync-auction' ); ?></strong> <?php echo esc_html( bsync_auction_get_buyer_number_for_user( $buyer->ID ) ); ?></p>
     <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;">
@@ -456,7 +585,7 @@ function bsync_auction_build_receipt_email_html( $buyer, $items, $payment ) {
  * @return void
  */
 function bsync_auction_ajax_send_buyer_receipt() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_send_json_error( array( 'message' => __( 'Permission denied.', 'bsync-auction' ) ), 403 );
     }
 
@@ -466,6 +595,12 @@ function bsync_auction_ajax_send_buyer_receipt() {
     }
 
     $buyer_id    = absint( $_POST['buyer_id'] ?? 0 );
+    $auction_id  = absint( $_POST['auction_id'] ?? 0 );
+
+    if ( $auction_id > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'You are not allowed to access this auction.', 'bsync-auction' ) ), 403 );
+    }
+
     $item_ids_raw = sanitize_text_field( wp_unslash( $_POST['item_ids'] ?? '' ) );
     $item_ids    = array_filter( array_map( 'absint', explode( ',', $item_ids_raw ) ) );
 
@@ -512,6 +647,11 @@ function bsync_auction_ajax_send_buyer_receipt() {
             continue;
         }
 
+        $item_auction_id = (int) get_post_meta( $item_id, 'bsync_auction_id', true );
+        if ( $item_auction_id > 0 && ! bsync_auction_user_can_access_auction_scope( $item_auction_id ) ) {
+            continue;
+        }
+
         $item_buyer = (int) get_post_meta( $item_id, 'bsync_auction_buyer_id', true );
         if ( $item_buyer !== $buyer_id ) {
             continue;
@@ -539,7 +679,7 @@ function bsync_auction_ajax_send_buyer_receipt() {
 
     $save_result = bsync_auction_save_buyer_receipt_payment_data(
         $buyer_id,
-        absint( $_POST['auction_id'] ?? 0 ),
+        $auction_id,
         $payment
     );
 
@@ -548,7 +688,7 @@ function bsync_auction_ajax_send_buyer_receipt() {
     }
 
     $subject = sprintf( __( 'Auction Receipt - %s', 'bsync-auction' ), get_bloginfo( 'name' ) );
-    $body    = bsync_auction_build_receipt_email_html( $buyer, $items, $payment );
+    $body    = bsync_auction_build_receipt_email_html( $buyer, $items, $payment, $auction_id );
 
     add_filter( 'wp_mail_content_type', 'bsync_auction_receipt_mail_content_type' );
 
@@ -575,7 +715,7 @@ function bsync_auction_ajax_send_buyer_receipt() {
  * @return void
  */
 function bsync_auction_ajax_save_buyer_receipt_payment() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_send_json_error( array( 'message' => __( 'Permission denied.', 'bsync-auction' ) ), 403 );
     }
 
@@ -586,6 +726,10 @@ function bsync_auction_ajax_save_buyer_receipt_payment() {
 
     $buyer_id    = absint( $_POST['buyer_id'] ?? 0 );
     $auction_id  = absint( $_POST['auction_id'] ?? 0 );
+
+    if ( $auction_id > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'You are not allowed to access this auction.', 'bsync-auction' ) ), 403 );
+    }
 
     if ( $buyer_id <= 0 || ! ( get_user_by( 'id', $buyer_id ) instanceof WP_User ) ) {
         wp_send_json_error( array( 'message' => __( 'Invalid buyer.', 'bsync-auction' ) ), 400 );

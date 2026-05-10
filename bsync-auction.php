@@ -18,7 +18,11 @@ define( 'BSYNC_AUCTION_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BSYNC_AUCTION_AUCTION_CPT', 'bsync_auction' );
 define( 'BSYNC_AUCTION_ITEM_CPT', 'bsync_auction_item' );
 define( 'BSYNC_AUCTION_MANAGE_CAP', 'bsync_manage_auctions' );
+define( 'BSYNC_AUCTION_SCHEMA_VERSION', '2026.05.10.1' );
 
+require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/permissions.php';
+require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/assignments.php';
+require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/query-scope.php';
 require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/activation.php';
 require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/cpt.php';
 require_once BSYNC_AUCTION_PLUGIN_DIR . 'includes/core/meta-boxes.php';

@@ -54,12 +54,18 @@
         var $modal = $(this).closest('.bsync-auction-receipt-modal');
         var html = $modal.find('.bsync-auction-receipt-printable').html();
         var printWindow = window.open('', '_blank', 'width=900,height=700');
+        var printTitle = BsyncAuctionBuyerReceipts.printTitle || 'Receipt';
+        var cssUrl = BsyncAuctionBuyerReceipts.printCssUrl || '';
 
         if (!printWindow) {
             return;
         }
 
-        printWindow.document.write('<html><head><title>Receipt</title></head><body>' + html + '</body></html>');
+        printWindow.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + printTitle + '</title>');
+        if (cssUrl) {
+            printWindow.document.write('<link rel="stylesheet" href="' + cssUrl + '" media="all">');
+        }
+        printWindow.document.write('</head><body class="bsync-auction-print-page"><div class="bsync-auction-receipt-printable">' + html + '</div></body></html>');
         printWindow.document.close();
         printWindow.focus();
         printWindow.print();

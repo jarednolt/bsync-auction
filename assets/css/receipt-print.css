@@ -1,0 +1,83 @@
+/* Printable receipt stylesheet.
+ * Override this via filter bsync_auction_receipt_print_css_url if needed.
+ */
+
+:root {
+    --receipt-text: #111827;
+    --receipt-muted: #4b5563;
+    --receipt-line: #d1d5db;
+    --receipt-strong: #111111;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    color: var(--receipt-text);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    background: #ffffff;
+}
+
+.bsync-auction-print-page {
+    padding: 24px;
+}
+
+.bsync-auction-receipt-printable {
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.bsync-auction-receipt-printable h1,
+.bsync-auction-receipt-printable h2,
+.bsync-auction-receipt-printable h3,
+.bsync-auction-receipt-printable h4 {
+    color: var(--receipt-strong);
+    margin: 0 0 10px;
+}
+
+.bsync-auction-receipt-printable p {
+    margin: 0 0 8px;
+}
+
+.bsync-auction-receipt-auction-info {
+    margin: 0 0 14px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid var(--receipt-line);
+}
+
+.bsync-auction-receipt-printable table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 0;
+}
+
+.bsync-auction-receipt-printable th,
+.bsync-auction-receipt-printable td {
+    border: 1px solid var(--receipt-line);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.bsync-auction-receipt-printable th {
+    background: #f9fafb;
+    font-weight: 600;
+}
+
+.bsync-auction-receipt-printable tr:last-child td {
+    font-weight: 700;
+}
+
+@media print {
+    html,
+    body {
+        margin: 0;
+        padding: 0;
+    }
+
+    .bsync-auction-print-page {
+        padding: 0;
+    }
+}

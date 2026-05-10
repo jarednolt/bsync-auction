@@ -1,0 +1,47 @@
+/* Buyer Receipts admin modal styles. Scoped to avoid affecting other admin pages. */
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable {
+    color: #111827;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable h1,
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable h2,
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable h3,
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable h4 {
+    margin: 0 0 10px;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable p {
+    margin: 0 0 8px;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-auction-info {
+    margin: 0 0 14px;
+    padding: 0 0 8px;
+    border-bottom: 1px solid #d1d5db;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 0;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable th,
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable td {
+    border: 1px solid #d1d5db;
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable th {
+    background: #f9fafb;
+    font-weight: 600;
+}
+
+.bsync-auction-receipt-modal .bsync-auction-receipt-printable tbody tr:last-child td {
+    font-weight: 700;
+}

@@ -8,11 +8,12 @@ add_action( 'admin_menu', 'bsync_auction_register_admin_menus' );
 
 function bsync_auction_register_admin_menus() {
     $parent_slug = 'edit.php?post_type=' . BSYNC_AUCTION_AUCTION_CPT;
+    $plugin_menu_cap = bsync_auction_can_manage_plugin() ? 'read' : BSYNC_AUCTION_MANAGE_CAP;
 
     add_menu_page(
         __( 'Auctions', 'bsync-auction' ),
         __( 'Auctions', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         $parent_slug,
         '',
         'dashicons-store',
@@ -23,7 +24,7 @@ function bsync_auction_register_admin_menus() {
         $parent_slug,
         __( 'Items', 'bsync-auction' ),
         __( 'Items', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         'edit.php?post_type=' . BSYNC_AUCTION_ITEM_CPT
     );
 
@@ -31,7 +32,7 @@ function bsync_auction_register_admin_menus() {
         $parent_slug,
         __( 'Manager Item Grid', 'bsync-auction' ),
         __( 'Manager Item Grid', 'bsync-auction' ),
-        'bsync_manage_members',
+        $plugin_menu_cap,
         'bsync-auction-manager-grid',
         'bsync_auction_render_manager_item_grid_page'
     );
@@ -41,7 +42,7 @@ function bsync_auction_register_admin_menus() {
         null,
         __( 'Import Items', 'bsync-auction' ),
         __( 'Import Items', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         'bsync-auction-import-items',
         'bsync_auction_render_import_items_page'
     );
@@ -50,13 +51,13 @@ function bsync_auction_register_admin_menus() {
         $parent_slug,
         __( 'Buyer Receipts', 'bsync-auction' ),
         __( 'Buyer Receipts', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         'bsync-auction-buyer-receipts',
         'bsync_auction_render_buyer_receipts_page'
     );
 
     // Ensure bsync_member_manager users get a visible entry even if they don't see the Auctions menu.
-    if ( current_user_can( 'bsync_manage_members' ) && ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( current_user_can( 'bsync_manage_members' ) && ! bsync_auction_can_manage_plugin() ) {
         add_menu_page(
             __( 'Auction Item Grid', 'bsync-auction' ),
             __( 'Auction Item Grid', 'bsync-auction' ),
@@ -72,7 +73,7 @@ function bsync_auction_register_admin_menus() {
         $parent_slug,
         __( 'Auctioneers', 'bsync-auction' ),
         __( 'Auctioneers', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         'bsync-auction-auctioneers',
         'bsync_auction_render_auctioneers_page'
     );
@@ -81,14 +82,14 @@ function bsync_auction_register_admin_menus() {
         $parent_slug,
         __( 'How It Works', 'bsync-auction' ),
         __( 'How It Works', 'bsync-auction' ),
-        BSYNC_AUCTION_MANAGE_CAP,
+        $plugin_menu_cap,
         'bsync-auction-how-it-works',
         'bsync_auction_render_how_it_works_page'
     );
 }
 
 function bsync_auction_render_auctioneers_page() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
     }
 
@@ -145,7 +146,7 @@ function bsync_auction_render_auctioneers_page() {
 }
 
 function bsync_auction_render_how_it_works_page() {
-    if ( ! current_user_can( BSYNC_AUCTION_MANAGE_CAP ) ) {
+    if ( ! bsync_auction_can_manage_plugin() ) {
         wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
     }
 

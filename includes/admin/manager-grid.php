@@ -7,7 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 add_action( 'admin_enqueue_scripts', 'bsync_auction_enqueue_manager_grid_assets' );
 
 function bsync_auction_user_can_manage_grid() {
-    return current_user_can( 'manage_options' ) || current_user_can( BSYNC_AUCTION_MANAGE_CAP ) || current_user_can( 'bsync_manage_members' );
+    return bsync_auction_can_clerk_auction();
 }
 
 function bsync_auction_enqueue_manager_grid_assets( $hook ) {
@@ -27,11 +27,19 @@ function bsync_auction_enqueue_manager_grid_assets( $hook ) {
         'bsync-auction-admin-grid',
         'BsyncAuctionGrid',
         array(
-            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-            'nonce'   => wp_create_nonce( 'bsync_auction_save_item_row' ),
-            'saving'  => __( 'Saving...', 'bsync-auction' ),
-            'saved'   => __( 'Saved', 'bsync-auction' ),
-            'failed'  => __( 'Save failed', 'bsync-auction' ),
+            'ajaxUrl'            => admin_url( 'admin-ajax.php' ),
+            'nonce'              => wp_create_nonce( 'bsync_auction_save_item_row' ),
+            'quickAddNonce'      => wp_create_nonce( 'bsync_auction_quick_add_item' ),
+            'saving'             => __( 'Saving...', 'bsync-auction' ),
+            'saved'              => __( 'Saved', 'bsync-auction' ),
+            'failed'             => __( 'Save failed', 'bsync-auction' ),
+            'quickAddButton'     => __( 'Quick Add Next', 'bsync-auction' ),
+            'quickAddPrompt'     => __( 'Enter the new item title:', 'bsync-auction' ),
+            'quickAddAdded'      => __( 'New item added after sold row.', 'bsync-auction' ),
+            'quickAddMissingCtx' => __( 'This row is not linked to an auction.', 'bsync-auction' ),
+            'noBuyer'            => __( 'No Buyer', 'bsync-auction' ),
+            'linkedUserTemplate' => __( 'Linked user: %s', 'bsync-auction' ),
+            'statuses'           => bsync_auction_get_item_statuses(),
         )
     );
 }
@@ -53,6 +61,12 @@ function bsync_auction_render_manager_item_grid_page() {
         )
     );
 
+    $auctions = bsync_auction_filter_auctions_by_scope( $auctions );
+
+    if ( $auction_filter > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_filter ) ) {
+        $auction_filter = 0;
+    }
+
     $query = array(
         'post_type'      => BSYNC_AUCTION_ITEM_CPT,
         'post_status'    => array( 'publish', 'draft', 'pending', 'future', 'private' ),
@@ -70,6 +84,8 @@ function bsync_auction_render_manager_item_grid_page() {
             ),
         );
     }
+
+    $query = bsync_auction_apply_scope_to_item_query_args( $query );
 
     $items = get_posts( $query );
 
@@ -109,7 +125,7 @@ function bsync_auction_render_manager_item_grid_page() {
     );
     echo '</div>';
 
-    echo '<form method="get" style="margin:16px 0;">';
+    echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '" style="margin:16px 0;">';
     echo '<input type="hidden" name="page" value="bsync-auction-manager-grid" />';
     echo '<label for="auction_id"><strong>' . esc_html__( 'Filter by Auction:', 'bsync-auction' ) . '</strong></label> ';
     echo '<select id="auction_id" name="auction_id">';
@@ -149,13 +165,18 @@ function bsync_auction_render_manager_item_grid_page() {
         $current_bid  = get_post_meta( $item_id, 'bsync_auction_current_bid', true );
         $sold_price   = get_post_meta( $item_id, 'bsync_auction_sold_price_internal', true );
         $auction_id   = (int) get_post_meta( $item_id, 'bsync_auction_id', true );
+
+        if ( $auction_id > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+            continue;
+        }
+
         $auction_name = $auction_id > 0 ? get_the_title( $auction_id ) : __( 'Unassigned', 'bsync-auction' );
 
         if ( '' === $status ) {
             $status = 'available';
         }
 
-        echo '<tr data-item-id="' . esc_attr( $item_id ) . '">';
+        echo '<tr data-item-id="' . esc_attr( $item_id ) . '" data-auction-id="' . esc_attr( $auction_id ) . '" data-auction-name="' . esc_attr( (string) $auction_name ) . '">';
         echo '<td>' . esc_html( $item_number ) . '</td>';
         $buyer_user         = $buyer_id > 0 ? get_user_by( 'id', $buyer_id ) : false;
         $buyer_number_value  = $buyer_id > 0 ? bsync_auction_get_buyer_number_for_user( $buyer_id ) : '';

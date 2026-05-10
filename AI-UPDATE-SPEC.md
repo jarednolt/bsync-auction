@@ -138,6 +138,9 @@ Module: `includes/admin/manager-grid.php`
 
 - Purpose: inline-editing auction item records
 - Permission helper: `bsync_auction_user_can_manage_grid()`
+- Grid rows now include auction context attributes used by JS quick-add:
+  - `data-auction-id`
+  - `data-auction-name`
 - Grid row editable fields:
   - `order_number`
   - `buyer_number` (text input)
@@ -149,6 +152,10 @@ Module: `includes/admin/manager-grid.php`
   1. `bsync_auction_order_number`
   2. `bsync_auction_item_number`
 - Includes helper notice showing active buyer-number meta keys
+- Script localization also includes quick-add config:
+  - `quickAddNonce`
+  - quick-add UI labels/messages
+  - status map used to render inserted rows
 
 ### 6.3 Grid AJAX save endpoint
 
@@ -170,8 +177,33 @@ Module: `includes/admin/ajax.php`
   - linked buyer display name
   - normalized buyer number
   - order number
+  - normalized status (used by client to reflect sold auto-promotion)
 
-### 6.4 JS behavior
+### 6.4 Grid AJAX quick-add endpoint
+
+Module: `includes/admin/ajax.php`
+
+- AJAX action: `wp_ajax_bsync_auction_quick_add_item`
+- Purpose: create a new auction item during live clerking without leaving the grid
+- Trigger pattern: client shows quick-add only after a successful sold row save
+- Validation checks:
+  - capability (`bsync_auction_user_can_manage_grid`)
+  - quick-add nonce (`bsync_auction_quick_add_item`)
+  - valid auction post type
+  - auction scope access (`bsync_auction_user_can_access_auction_scope`)
+  - non-empty title
+- Creation behavior:
+  - creates item post (`BSYNC_AUCTION_ITEM_CPT`)
+  - sets immutable fixed item number via `bsync_auction_generate_next_item_number()`
+  - assigns same auction (`bsync_auction_id`)
+  - sets order from request (default fallback `1`)
+  - initializes status `available`, buyer empty, money fields `0.00`
+- Response payload contains full row bootstrap data:
+  - `itemId`, `itemNumber`, `orderNumber`, `title`, `editUrl`
+  - `auctionId`, `auctionName`
+  - defaults for `buyerNumber`, `status`, money fields, and buyer label
+
+### 6.5 JS behavior
 
 File: `assets/js/admin-grid.js`
 
@@ -182,6 +214,11 @@ File: `assets/js/admin-grid.js`
   - order number input
   - buyer number input
   - linked user label
+- Quick-add flow:
+  - when save succeeds and row status resolves to `sold`, append `.bsync-auction-quick-add` button to row action cell
+  - on quick-add click, prompt for title and submit to `bsync_auction_quick_add_item`
+  - insert returned row HTML immediately after current sold row without page refresh
+  - inserted row supports the same `Save Row` action/event delegation
 
 ### 6.5 Buyer Totals payment persistence
 
@@ -258,33 +295,48 @@ When implementing any change, execute this sequence:
 2. Keep capability checks aligned with existing policy.
 3. Preserve buyer-number uniqueness behavior unless intentionally changed.
 4. If changing meta keys or resolver order, update helper notice text and docs.
-5. If changing statuses, update all of:
-   - `bsync_auction_get_item_statuses()`
-   - admin dropdowns
-   - AJAX validation
-   - status badge output
-6. If changing update/version behavior:
-   - bump `BSYNC_AUCTION_VERSION` in `bsync-auction.php`
-   - ensure Git tag format matches semver parser
-7. Run lint for changed PHP files:
-   - `php -l path/to/file.php`
-8. Sanity check WordPress flows:
-   - create/edit auction
-   - create/edit item
-   - save manager grid row
-   - edit user buyer number
-   - inspect plugin update screen
-9. Update both documentation files:
-   - `AI-UPDATE-SPEC.md`
-   - `HUMAN-UPDATE-GUIDE.md`
+5. If changing Manager Grid row actions, preserve sold-save quick-add behavior and scope checks.
+6. If changing inserted-row fields/statuses, keep JS row renderer aligned with PHP response payload.
+7. If changing statuses, update all of:
+  - `bsync_auction_get_item_statuses()`
+  - admin dropdowns
+  - AJAX validation
+  - status badge output
+8. If changing update/version behavior:
+  - bump `BSYNC_AUCTION_VERSION` in `bsync-auction.php`
+  - ensure Git tag format matches semver parser
+9. Run lint for changed PHP files:
+  - `php -l path/to/file.php`
+10. Sanity check WordPress flows:
+  - create/edit auction
+  - create/edit item
+  - save manager grid row
+  - edit user buyer number
+  - inspect plugin update screen
+11. Update both documentation files:
+  - `AI-UPDATE-SPEC.md`
+  - `HUMAN-UPDATE-GUIDE.md`
 
-## 11) Safe Extension Points
+## 11) Regression Checks (Quick Add + Grid Routing)
+
+1. Save a row as `sold` in Manager Grid and verify `Quick Add Next` appears.
+2. Click quick add, provide title, verify a new row appears directly under the sold row.
+3. Confirm new row defaults:
+  - same auction
+  - unique fixed item number
+  - status `available`
+  - buyer empty
+  - opening/current/sold prices at zero
+4. Save the newly inserted row and verify standard save endpoint still works.
+5. Verify filtered grid URL uses `admin.php?page=bsync-auction-manager-grid&auction_id=...` and does not route through `edit.php?page=...`.
+
+## 12) Safe Extension Points
 
 - `bsync_auction_buyer_number_meta_keys` filter for buyer-number lookup keys
 - Additive admin submenus under existing `bsync-auctions` parent slug
 - Additional fields in grid row payload if AJAX handler and JS are updated together
 
-## 12) Known Couplings
+## 13) Known Couplings
 
 - `includes/admin/ajax.php` depends on helpers in `includes/core/meta-boxes.php`
 - `includes/admin/manager-grid.php` depends on resolver/meta-key helper functions in `meta-boxes.php`

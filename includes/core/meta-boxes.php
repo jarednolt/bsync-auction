@@ -6,6 +6,171 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 add_action( 'add_meta_boxes', 'bsync_auction_register_meta_boxes' );
 add_action( 'save_post', 'bsync_auction_save_meta_boxes', 10, 2 );
+add_action( 'admin_enqueue_scripts', 'bsync_auction_enqueue_assignment_assets' );
+add_action( 'wp_ajax_bsync_auction_assignment_add', 'bsync_auction_ajax_assignment_add' );
+add_action( 'wp_ajax_bsync_auction_assignment_remove', 'bsync_auction_ajax_assignment_remove' );
+add_action( 'restrict_manage_posts', 'bsync_auction_render_bulk_assignment_controls', 10, 2 );
+add_filter( 'bulk_actions-edit-bsync_auction', 'bsync_auction_register_bulk_assignment_action' );
+add_filter( 'handle_bulk_actions-edit-bsync_auction', 'bsync_auction_handle_bulk_assignment_action', 10, 3 );
+add_action( 'admin_notices', 'bsync_auction_render_bulk_assignment_notice' );
+
+function bsync_auction_enqueue_assignment_assets( $hook ) {
+    if ( ! in_array( $hook, array( 'post.php', 'post-new.php' ), true ) ) {
+        return;
+    }
+
+    $screen = get_current_screen();
+    if ( ! $screen || BSYNC_AUCTION_AUCTION_CPT !== $screen->post_type ) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'bsync-auction-admin-assignments',
+        BSYNC_AUCTION_PLUGIN_URL . 'assets/js/admin-assignments.js',
+        array( 'jquery' ),
+        BSYNC_AUCTION_VERSION,
+        true
+    );
+
+    wp_localize_script(
+        'bsync-auction-admin-assignments',
+        'BsyncAuctionAssignments',
+        array(
+            'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+            'nonce'        => wp_create_nonce( 'bsync_auction_assignments' ),
+            'saving'       => __( 'Saving assignment...', 'bsync-auction' ),
+            'saved'        => __( 'Assignment saved.', 'bsync-auction' ),
+            'removing'     => __( 'Removing assignment...', 'bsync-auction' ),
+            'removed'      => __( 'Assignment removed.', 'bsync-auction' ),
+            'saveFailed'   => __( 'Could not save assignment.', 'bsync-auction' ),
+            'removeFailed' => __( 'Could not remove assignment.', 'bsync-auction' ),
+        )
+    );
+}
+
+function bsync_auction_render_bulk_assignment_controls( $post_type, $which ) {
+    if ( BSYNC_AUCTION_AUCTION_CPT !== $post_type || 'top' !== $which ) {
+        return;
+    }
+
+    if ( ! bsync_auction_can_manage_plugin() ) {
+        return;
+    }
+
+    $users = get_users(
+        array(
+            'orderby' => 'display_name',
+            'order'   => 'ASC',
+            'number'  => 300,
+        )
+    );
+
+    echo '<label class="screen-reader-text" for="bsync_bulk_assign_user_id">' . esc_html__( 'Assignment User', 'bsync-auction' ) . '</label>';
+    echo '<select name="bsync_bulk_assign_user_id" id="bsync_bulk_assign_user_id">';
+    echo '<option value="0">' . esc_html__( 'Assign User...', 'bsync-auction' ) . '</option>';
+    foreach ( $users as $user ) {
+        echo '<option value="' . esc_attr( (string) $user->ID ) . '">' . esc_html( $user->display_name . ' (' . $user->user_email . ')' ) . '</option>';
+    }
+    echo '</select>';
+
+    echo '<label class="screen-reader-text" for="bsync_bulk_assign_role">' . esc_html__( 'Assignment Role', 'bsync-auction' ) . '</label>';
+    echo '<select name="bsync_bulk_assign_role" id="bsync_bulk_assign_role">';
+    foreach ( bsync_auction_get_assignment_roles() as $role_key => $role_label ) {
+        echo '<option value="' . esc_attr( $role_key ) . '">' . esc_html( $role_label ) . '</option>';
+    }
+    echo '</select>';
+}
+
+function bsync_auction_register_bulk_assignment_action( $actions ) {
+    $actions['bsync_assign_staff'] = __( 'Assign Staff to Selected Auctions', 'bsync-auction' );
+
+    return $actions;
+}
+
+function bsync_auction_handle_bulk_assignment_action( $redirect_to, $action, $post_ids ) {
+    if ( 'bsync_assign_staff' !== $action ) {
+        return $redirect_to;
+    }
+
+    if ( ! bsync_auction_can_manage_plugin() ) {
+        return add_query_arg( 'bsync_bulk_assign_denied', '1', $redirect_to );
+    }
+
+    $user_id = absint( $_REQUEST['bsync_bulk_assign_user_id'] ?? 0 );
+    $role    = sanitize_key( wp_unslash( $_REQUEST['bsync_bulk_assign_role'] ?? 'staff' ) );
+
+    if ( $user_id <= 0 || ! ( get_user_by( 'id', $user_id ) instanceof WP_User ) ) {
+        return add_query_arg( 'bsync_bulk_assign_invalid_user', '1', $redirect_to );
+    }
+
+    $count_success = 0;
+    $count_denied  = 0;
+    $count_failed  = 0;
+
+    foreach ( (array) $post_ids as $post_id ) {
+        $auction_id = absint( $post_id );
+
+        if ( $auction_id <= 0 || BSYNC_AUCTION_AUCTION_CPT !== get_post_type( $auction_id ) ) {
+            $count_failed++;
+            continue;
+        }
+
+        if ( ! bsync_auction_can_manage_auction( $auction_id ) ) {
+            $count_denied++;
+            continue;
+        }
+
+        if ( bsync_auction_assign_user_to_auction( $auction_id, $user_id, $role ) ) {
+            $count_success++;
+        } else {
+            $count_failed++;
+        }
+    }
+
+    $redirect_to = add_query_arg( 'bsync_bulk_assign_success', (string) $count_success, $redirect_to );
+    $redirect_to = add_query_arg( 'bsync_bulk_assign_denied_count', (string) $count_denied, $redirect_to );
+    $redirect_to = add_query_arg( 'bsync_bulk_assign_failed', (string) $count_failed, $redirect_to );
+
+    return $redirect_to;
+}
+
+function bsync_auction_render_bulk_assignment_notice() {
+    if ( ! isset( $_REQUEST['bsync_bulk_assign_success'] ) && ! isset( $_REQUEST['bsync_bulk_assign_invalid_user'] ) && ! isset( $_REQUEST['bsync_bulk_assign_denied'] ) ) {
+        return;
+    }
+
+    if ( ! bsync_auction_can_manage_plugin() ) {
+        return;
+    }
+
+    if ( isset( $_REQUEST['bsync_bulk_assign_invalid_user'] ) ) {
+        echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Bulk assignment failed: choose a valid user.', 'bsync-auction' ) . '</p></div>';
+        return;
+    }
+
+    if ( isset( $_REQUEST['bsync_bulk_assign_denied'] ) ) {
+        echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Bulk assignment failed: permission denied.', 'bsync-auction' ) . '</p></div>';
+        return;
+    }
+
+    $success = absint( $_REQUEST['bsync_bulk_assign_success'] ?? 0 );
+    $denied  = absint( $_REQUEST['bsync_bulk_assign_denied_count'] ?? 0 );
+    $failed  = absint( $_REQUEST['bsync_bulk_assign_failed'] ?? 0 );
+
+    $parts = array(
+        sprintf( esc_html__( 'Assignments added: %d', 'bsync-auction' ), $success ),
+    );
+
+    if ( $denied > 0 ) {
+        $parts[] = sprintf( esc_html__( 'Denied: %d', 'bsync-auction' ), $denied );
+    }
+
+    if ( $failed > 0 ) {
+        $parts[] = sprintf( esc_html__( 'Failed: %d', 'bsync-auction' ), $failed );
+    }
+
+    echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( implode( ' | ', $parts ) ) . '</p></div>';
+}
 
 function bsync_auction_register_meta_boxes() {
     add_meta_box(
@@ -75,7 +240,226 @@ function bsync_auction_render_auction_meta_box( $post ) {
             <td><input type="datetime-local" id="bsync_auction_ends_at" name="bsync_auction_ends_at" value="<?php echo esc_attr( bsync_auction_to_datetime_local( $ends_at ) ); ?>" /></td>
         </tr>
     </table>
+    <?php if ( $post->ID > 0 ) : ?>
+        <hr />
+        <h4 style="margin:10px 0 6px;"><?php esc_html_e( 'Current Staff Assignments', 'bsync-auction' ); ?></h4>
+        <?php echo bsync_auction_get_assignment_summary_html( $post->ID, $auctioneer ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+
+        <hr />
+        <p>
+            <button type="button" class="button button-secondary bsync-auction-open-assignments-modal" data-target="bsync-auction-assignments-modal-<?php echo esc_attr( $post->ID ); ?>">
+                <?php esc_html_e( 'Manage Staff Assignments', 'bsync-auction' ); ?>
+            </button>
+        </p>
+        <div id="bsync-auction-assignments-modal-<?php echo esc_attr( $post->ID ); ?>" class="bsync-auction-assignments-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:100000;">
+            <div style="max-width:880px;margin:40px auto;background:#fff;border-radius:8px;padding:18px;max-height:82vh;overflow:auto;position:relative;">
+                <button type="button" class="button-link bsync-auction-close-assignments-modal" style="position:absolute;right:12px;top:8px;font-size:20px;line-height:1;">&times;</button>
+                <h3 style="margin-top:0;"><?php esc_html_e( 'Auction Staff Assignments', 'bsync-auction' ); ?></h3>
+                <p class="description"><?php esc_html_e( 'Assign users to this auction as auctioneers, managers, clerks, or staff.', 'bsync-auction' ); ?></p>
+
+                <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:12px 0;">
+                    <div>
+                        <label for="bsync-auction-assignment-user-<?php echo esc_attr( $post->ID ); ?>"><strong><?php esc_html_e( 'User', 'bsync-auction' ); ?></strong></label><br />
+                        <select id="bsync-auction-assignment-user-<?php echo esc_attr( $post->ID ); ?>" class="bsync-auction-assignment-user">
+                            <option value="0"><?php esc_html_e( 'Select User', 'bsync-auction' ); ?></option>
+                            <?php foreach ( $users as $user ) : ?>
+                                <option value="<?php echo esc_attr( $user->ID ); ?>"><?php echo esc_html( $user->display_name . ' (' . $user->user_email . ')' ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="bsync-auction-assignment-role-<?php echo esc_attr( $post->ID ); ?>"><strong><?php esc_html_e( 'Role', 'bsync-auction' ); ?></strong></label><br />
+                        <select id="bsync-auction-assignment-role-<?php echo esc_attr( $post->ID ); ?>" class="bsync-auction-assignment-role">
+                            <?php foreach ( bsync_auction_get_assignment_roles() as $role_key => $role_label ) : ?>
+                                <option value="<?php echo esc_attr( $role_key ); ?>"><?php echo esc_html( $role_label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <button type="button" class="button button-primary bsync-auction-assignment-add" data-auction-id="<?php echo esc_attr( $post->ID ); ?>">
+                            <?php esc_html_e( 'Add Assignment', 'bsync-auction' ); ?>
+                        </button>
+                    </div>
+                </div>
+
+                <p class="description bsync-auction-assignment-status" aria-live="polite"></p>
+
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e( 'User', 'bsync-auction' ); ?></th>
+                            <th><?php esc_html_e( 'Role', 'bsync-auction' ); ?></th>
+                            <th><?php esc_html_e( 'Action', 'bsync-auction' ); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody class="bsync-auction-assignment-rows" data-auction-id="<?php echo esc_attr( $post->ID ); ?>">
+                        <?php echo bsync_auction_get_assignment_rows_html( $post->ID ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    <?php else : ?>
+        <hr />
+        <p class="description"><?php esc_html_e( 'Save this auction first, then you can assign auction staff with the popup manager.', 'bsync-auction' ); ?></p>
+    <?php endif; ?>
     <?php
+}
+
+function bsync_auction_get_assignment_rows_html( $auction_id ) {
+    $auction_id   = absint( $auction_id );
+    $assignments  = bsync_auction_get_assignments_for_auction( $auction_id );
+    $role_labels  = bsync_auction_get_assignment_roles();
+    $rendered     = 0;
+
+    ob_start();
+
+    foreach ( $assignments as $assignment ) {
+        $user_id = absint( $assignment['user_id'] ?? 0 );
+        $role    = sanitize_key( (string) ( $assignment['assignment_role'] ?? '' ) );
+        $user    = get_user_by( 'id', $user_id );
+
+        if ( ! ( $user instanceof WP_User ) ) {
+            continue;
+        }
+
+        $rendered++;
+        $role_label = isset( $role_labels[ $role ] ) ? $role_labels[ $role ] : ucfirst( $role );
+
+        echo '<tr>';
+        echo '<td>' . esc_html( $user->display_name . ' (' . $user->user_email . ')' ) . '</td>';
+        echo '<td>' . esc_html( $role_label ) . '</td>';
+        echo '<td><button type="button" class="button button-secondary bsync-auction-assignment-remove" data-auction-id="' . esc_attr( (string) $auction_id ) . '" data-user-id="' . esc_attr( (string) $user_id ) . '" data-role="' . esc_attr( $role ) . '">' . esc_html__( 'Remove', 'bsync-auction' ) . '</button></td>';
+        echo '</tr>';
+    }
+
+    if ( 0 === $rendered ) {
+        echo '<tr><td colspan="3">' . esc_html__( 'No staff assignments yet.', 'bsync-auction' ) . '</td></tr>';
+    }
+
+    return (string) ob_get_clean();
+}
+
+function bsync_auction_get_assignment_summary_html( $auction_id, $primary_auctioneer_id = 0 ) {
+    $auction_id  = absint( $auction_id );
+    $primary_auctioneer_id = absint( $primary_auctioneer_id );
+    $assignments = bsync_auction_get_assignments_for_auction( $auction_id );
+    $role_labels = bsync_auction_get_assignment_roles();
+
+    ob_start();
+    echo '<ul style="margin:0 0 8px 18px;">';
+
+    $has_any = false;
+
+    if ( $primary_auctioneer_id > 0 ) {
+        $primary_user = get_user_by( 'id', $primary_auctioneer_id );
+        if ( $primary_user instanceof WP_User ) {
+            echo '<li><strong>' . esc_html__( 'Primary Auctioneer', 'bsync-auction' ) . ':</strong> ' . esc_html( $primary_user->display_name . ' (' . $primary_user->user_email . ')' ) . '</li>';
+            $has_any = true;
+        }
+    }
+
+    foreach ( $assignments as $assignment ) {
+        $user_id = absint( $assignment['user_id'] ?? 0 );
+        $role    = sanitize_key( (string) ( $assignment['assignment_role'] ?? '' ) );
+        $user    = get_user_by( 'id', $user_id );
+
+        if ( ! ( $user instanceof WP_User ) ) {
+            continue;
+        }
+
+        $role_label = isset( $role_labels[ $role ] ) ? $role_labels[ $role ] : ucfirst( $role );
+
+        if ( 'auctioneer' === $role && $primary_auctioneer_id > 0 && $user_id === $primary_auctioneer_id ) {
+            continue;
+        }
+
+        echo '<li><strong>' . esc_html( $role_label ) . ':</strong> ' . esc_html( $user->display_name . ' (' . $user->user_email . ')' ) . '</li>';
+        $has_any = true;
+    }
+
+    echo '</ul>';
+
+    if ( ! $has_any ) {
+        return '<p class="description">' . esc_html__( 'No staff assignments yet.', 'bsync-auction' ) . '</p>';
+    }
+
+    return (string) ob_get_clean();
+}
+
+function bsync_auction_ajax_assignment_add() {
+    if ( ! bsync_auction_can_manage_plugin() ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'bsync-auction' ) ), 403 );
+    }
+
+    $nonce = sanitize_text_field( wp_unslash( $_POST['nonce'] ?? '' ) );
+    if ( ! wp_verify_nonce( $nonce, 'bsync_auction_assignments' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid security token.', 'bsync-auction' ) ), 403 );
+    }
+
+    $auction_id = absint( $_POST['auction_id'] ?? 0 );
+    $user_id    = absint( $_POST['user_id'] ?? 0 );
+    $role       = sanitize_key( wp_unslash( $_POST['assignment_role'] ?? 'staff' ) );
+
+    if ( $auction_id <= 0 || BSYNC_AUCTION_AUCTION_CPT !== get_post_type( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid auction.', 'bsync-auction' ) ), 400 );
+    }
+
+    if ( ! bsync_auction_can_manage_auction( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'You cannot manage this auction.', 'bsync-auction' ) ), 403 );
+    }
+
+    if ( $user_id <= 0 || ! ( get_user_by( 'id', $user_id ) instanceof WP_User ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid user.', 'bsync-auction' ) ), 400 );
+    }
+
+    if ( ! bsync_auction_assign_user_to_auction( $auction_id, $user_id, $role ) ) {
+        wp_send_json_error( array( 'message' => __( 'Could not save assignment.', 'bsync-auction' ) ), 500 );
+    }
+
+    wp_send_json_success(
+        array(
+            'message'  => __( 'Assignment saved.', 'bsync-auction' ),
+            'rowsHtml' => bsync_auction_get_assignment_rows_html( $auction_id ),
+        )
+    );
+}
+
+function bsync_auction_ajax_assignment_remove() {
+    if ( ! bsync_auction_can_manage_plugin() ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'bsync-auction' ) ), 403 );
+    }
+
+    $nonce = sanitize_text_field( wp_unslash( $_POST['nonce'] ?? '' ) );
+    if ( ! wp_verify_nonce( $nonce, 'bsync_auction_assignments' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid security token.', 'bsync-auction' ) ), 403 );
+    }
+
+    $auction_id = absint( $_POST['auction_id'] ?? 0 );
+    $user_id    = absint( $_POST['user_id'] ?? 0 );
+    $role       = sanitize_key( wp_unslash( $_POST['assignment_role'] ?? '' ) );
+
+    if ( $auction_id <= 0 || BSYNC_AUCTION_AUCTION_CPT !== get_post_type( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid auction.', 'bsync-auction' ) ), 400 );
+    }
+
+    if ( ! bsync_auction_can_manage_auction( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'You cannot manage this auction.', 'bsync-auction' ) ), 403 );
+    }
+
+    if ( $user_id <= 0 ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid user.', 'bsync-auction' ) ), 400 );
+    }
+
+    if ( ! bsync_auction_remove_assignment( $auction_id, $user_id, $role ) ) {
+        wp_send_json_error( array( 'message' => __( 'Could not remove assignment.', 'bsync-auction' ) ), 500 );
+    }
+
+    wp_send_json_success(
+        array(
+            'message'  => __( 'Assignment removed.', 'bsync-auction' ),
+            'rowsHtml' => bsync_auction_get_assignment_rows_html( $auction_id ),
+        )
+    );
 }
 
 function bsync_auction_render_item_meta_box( $post ) {
@@ -203,11 +587,23 @@ function bsync_auction_save_meta_boxes( $post_id, $post ) {
     }
 
     if ( BSYNC_AUCTION_AUCTION_CPT === $post->post_type ) {
+        $previous_auctioneer_id = (int) get_post_meta( $post_id, 'bsync_auction_auctioneer_id', true );
+        $new_auctioneer_id      = absint( $_POST['bsync_auction_auctioneer_id'] ?? 0 );
+
         update_post_meta( $post_id, 'bsync_auction_location', sanitize_text_field( wp_unslash( $_POST['bsync_auction_location'] ?? '' ) ) );
         update_post_meta( $post_id, 'bsync_auction_address', sanitize_textarea_field( wp_unslash( $_POST['bsync_auction_address'] ?? '' ) ) );
-        update_post_meta( $post_id, 'bsync_auction_auctioneer_id', absint( $_POST['bsync_auction_auctioneer_id'] ?? 0 ) );
+        update_post_meta( $post_id, 'bsync_auction_auctioneer_id', $new_auctioneer_id );
         update_post_meta( $post_id, 'bsync_auction_starts_at', bsync_auction_normalize_datetime( wp_unslash( $_POST['bsync_auction_starts_at'] ?? '' ) ) );
         update_post_meta( $post_id, 'bsync_auction_ends_at', bsync_auction_normalize_datetime( wp_unslash( $_POST['bsync_auction_ends_at'] ?? '' ) ) );
+
+        if ( $previous_auctioneer_id > 0 && $previous_auctioneer_id !== $new_auctioneer_id ) {
+            bsync_auction_remove_assignment( $post_id, $previous_auctioneer_id, 'auctioneer' );
+        }
+
+        if ( $new_auctioneer_id > 0 ) {
+            bsync_auction_assign_user_to_auction( $post_id, $new_auctioneer_id, 'auctioneer' );
+        }
+
         return;
     }
 
