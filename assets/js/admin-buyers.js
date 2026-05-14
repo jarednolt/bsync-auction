@@ -1,6 +1,60 @@
 (function($) {
     'use strict';
 
+    function toInt(value) {
+        var parsed = parseInt(value, 10);
+        return isNaN(parsed) ? 0 : parsed;
+    }
+
+    function getAuctionId($button) {
+        return toInt($button.data('auction-id'));
+    }
+
+    function getContextValidationError($button) {
+        if (!BsyncAuctionBuyerReceipts.requiresAuctionContext) {
+            return '';
+        }
+
+        if (getAuctionId($button) > 0) {
+            return '';
+        }
+
+        if (BsyncAuctionBuyerReceipts.errors && BsyncAuctionBuyerReceipts.errors.missing_auction) {
+            return BsyncAuctionBuyerReceipts.errors.missing_auction;
+        }
+
+        return BsyncAuctionBuyerReceipts.failed;
+    }
+
+    function resolveActionErrorMessage(responseData, fallbackMessage) {
+        var code = responseData && responseData.code ? String(responseData.code) : '';
+
+        if (code && BsyncAuctionBuyerReceipts.errors && BsyncAuctionBuyerReceipts.errors[code]) {
+            return BsyncAuctionBuyerReceipts.errors[code];
+        }
+
+        if (responseData && responseData.message) {
+            return responseData.message;
+        }
+
+        return fallbackMessage;
+    }
+
+    function setInitialContextGuardState() {
+        $('.bsync-auction-email-receipt, .bsync-auction-save-payment').each(function() {
+            var $button = $(this);
+            var $modal = $button.closest('.bsync-auction-receipt-modal');
+            var errorMessage = getContextValidationError($button);
+
+            if (!errorMessage) {
+                return;
+            }
+
+            $button.prop('disabled', true);
+            setEmailStatus($modal, errorMessage, true);
+        });
+    }
+
     function getModalPayload($modal, $button) {
         var status = $modal.find('.bsync-auction-payment-status:checked').val() || 'unpaid';
 
@@ -74,6 +128,12 @@
     $(document).on('click', '.bsync-auction-email-receipt', function() {
         var $button = $(this);
         var $modal = $button.closest('.bsync-auction-receipt-modal');
+        var validationError = getContextValidationError($button);
+
+        if (validationError) {
+            setEmailStatus($modal, validationError, true);
+            return;
+        }
 
         var paymentPayload = getModalPayload($modal, $button);
 
@@ -102,14 +162,14 @@
                         updatePaidStatusLabel($button.data('buyer-id'), response.data.paid_label);
                     }
                 } else {
-                    var err = response && response.data && response.data.message ? response.data.message : BsyncAuctionBuyerReceipts.failed;
+                    var err = resolveActionErrorMessage(response && response.data ? response.data : null, BsyncAuctionBuyerReceipts.failed);
                     setEmailStatus($modal, err, true);
                 }
             })
             .fail(function(xhr) {
                 var err = BsyncAuctionBuyerReceipts.failed;
-                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
-                    err = xhr.responseJSON.data.message;
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data) {
+                    err = resolveActionErrorMessage(xhr.responseJSON.data, BsyncAuctionBuyerReceipts.failed);
                 }
                 setEmailStatus($modal, err, true);
             })
@@ -121,6 +181,13 @@
     $(document).on('click', '.bsync-auction-save-payment', function() {
         var $button = $(this);
         var $modal = $button.closest('.bsync-auction-receipt-modal');
+        var validationError = getContextValidationError($button);
+
+        if (validationError) {
+            setEmailStatus($modal, validationError, true);
+            return;
+        }
+
         var payload = getModalPayload($modal, $button);
 
         setEmailStatus($modal, BsyncAuctionBuyerReceipts.saving, false);
@@ -135,14 +202,14 @@
                         updatePaidStatusLabel($button.data('buyer-id'), response.data.paid_label);
                     }
                 } else {
-                    var err = response && response.data && response.data.message ? response.data.message : BsyncAuctionBuyerReceipts.saveFailed;
+                    var err = resolveActionErrorMessage(response && response.data ? response.data : null, BsyncAuctionBuyerReceipts.saveFailed);
                     setEmailStatus($modal, err, true);
                 }
             })
             .fail(function(xhr) {
                 var err = BsyncAuctionBuyerReceipts.saveFailed;
-                if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
-                    err = xhr.responseJSON.data.message;
+                if (xhr && xhr.responseJSON && xhr.responseJSON.data) {
+                    err = resolveActionErrorMessage(xhr.responseJSON.data, BsyncAuctionBuyerReceipts.saveFailed);
                 }
                 setEmailStatus($modal, err, true);
             })
@@ -150,5 +217,7 @@
                 $button.prop('disabled', false);
             });
     });
+
+    $(setInitialContextGuardState);
 
 })(jQuery);

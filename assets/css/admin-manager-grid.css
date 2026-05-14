@@ -1,0 +1,43 @@
+/*
+ * Bsync Auction — manager grid admin styles.
+ * Depends on admin-shared.css (bsync-admin-shared) for modal primitives.
+ * Only auction-grid-specific rules live here; modal overlay/inner come from
+ * .bsync-admin-modal / .bsync-admin-modal-inner in admin-shared.css.
+ */
+
+.bsync-auction-add-item-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+}
+
+.bsync-auction-add-item-grid p {
+    margin: 0;
+}
+
+.bsync-auction-add-item-grid input,
+.bsync-auction-add-item-grid select {
+    width: 100%;
+}
+
+.bsync-auction-add-item-actions {
+    margin: 14px 0 0;
+}
+
+.bsync-auction-duplicate-alert {
+    margin-top: 6px;
+    color: var(--bsync-color-error, #b91c1c);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.bsync-auction-duplicate-alert .bsync-auction-apply-suggested {
+    margin-left: 4px;
+    font-size: 12px;
+}
+
+@media (max-width: 640px) {
+    .bsync-auction-add-item-grid {
+        grid-template-columns: 1fr;
+    }
+}

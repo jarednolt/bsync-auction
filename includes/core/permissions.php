@@ -4,6 +4,9 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+add_filter( 'woocommerce_prevent_admin_access', 'bsync_auction_woocommerce_prevent_admin_access', 30 );
+add_filter( 'woocommerce_disable_admin_bar', 'bsync_auction_woocommerce_disable_admin_bar', 30 );
+
 /**
  * Resolve a target user for permission helpers.
  *
@@ -32,7 +35,7 @@ function bsync_auction_can_manage_plugin( $user_id = 0 ) {
         return false;
     }
 
-    return user_can( $user, 'manage_options' ) || user_can( $user, BSYNC_AUCTION_MANAGE_CAP );
+    return user_can( $user, 'manage_options' );
 }
 
 /**
@@ -46,7 +49,21 @@ function bsync_auction_can_manage_plugin( $user_id = 0 ) {
  * @return bool
  */
 function bsync_auction_can_manage_auction( $auction_id = 0, $user_id = 0 ) {
-    return bsync_auction_can_manage_plugin( $user_id );
+    if ( bsync_auction_can_manage_plugin( $user_id ) ) {
+        return true;
+    }
+
+    $auction_id = absint( $auction_id );
+    if ( $auction_id <= 0 ) {
+        return false;
+    }
+
+    $user = bsync_auction_get_permission_user( $user_id );
+    if ( ! ( $user instanceof WP_User ) ) {
+        return false;
+    }
+
+    return bsync_auction_user_is_assigned_to_auction( $auction_id, $user->ID, 'auctioneer' );
 }
 
 /**
@@ -57,6 +74,8 @@ function bsync_auction_can_manage_auction( $auction_id = 0, $user_id = 0 ) {
  * @return bool
  */
 function bsync_auction_can_clerk_auction( $auction_id = 0, $user_id = 0 ) {
+    $auction_id = absint( $auction_id );
+
     if ( bsync_auction_can_manage_auction( $auction_id, $user_id ) ) {
         return true;
     }
@@ -66,7 +85,13 @@ function bsync_auction_can_clerk_auction( $auction_id = 0, $user_id = 0 ) {
         return false;
     }
 
-    return user_can( $user, 'bsync_manage_members' );
+    if ( $auction_id > 0 ) {
+        return bsync_auction_user_is_assigned_to_auction( $auction_id, $user->ID, 'clerk' )
+            || bsync_auction_user_is_assigned_to_auction( $auction_id, $user->ID, 'auctioneer' );
+    }
+
+    $accessible = bsync_auction_get_accessible_auction_ids( $user->ID );
+    return is_array( $accessible ) && ! empty( $accessible );
 }
 
 /**
@@ -108,4 +133,32 @@ function bsync_auction_can_bid_item( $item_id, $user_id = 0 ) {
 
     $user = bsync_auction_get_permission_user( $user_id );
     return ( $user instanceof WP_User ) && $user->ID > 0;
+}
+
+/**
+ * Keep WooCommerce from blocking wp-admin for auction operators.
+ *
+ * @param bool $prevent_access Existing WooCommerce decision.
+ * @return bool
+ */
+function bsync_auction_woocommerce_prevent_admin_access( $prevent_access ) {
+    if ( bsync_auction_can_clerk_auction() ) {
+        return false;
+    }
+
+    return $prevent_access;
+}
+
+/**
+ * Keep admin bar enabled for auction operators under WooCommerce rules.
+ *
+ * @param bool $disable_admin_bar Existing WooCommerce decision.
+ * @return bool
+ */
+function bsync_auction_woocommerce_disable_admin_bar( $disable_admin_bar ) {
+    if ( bsync_auction_can_clerk_auction() ) {
+        return false;
+    }
+
+    return $disable_admin_bar;
 }

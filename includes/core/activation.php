@@ -5,10 +5,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 add_action( 'init', 'bsync_auction_maybe_run_migrations', 20 );
+add_action( 'init', 'bsync_auction_maybe_create_default_add_item_page', 30 );
+add_action( 'admin_notices', 'bsync_auction_render_add_item_page_notice' );
+
+/**
+ * Run after bsync-member finishes its own role/cap sync (init@999).
+ * Auction registers its own caps into whatever manager roles Member defined.
+ */
+add_action( 'bsync_member_sync_operator_roles', 'bsync_auction_register_caps_on_member_sync' );
 
 function bsync_auction_activate_plugin() {
     bsync_auction_register_caps_and_roles();
     bsync_auction_run_migrations();
+    bsync_auction_maybe_create_default_add_item_page();
 
     // Ensure post types exist before rewrite flush on activation.
     bsync_auction_register_post_types();
@@ -52,14 +61,131 @@ function bsync_auction_register_caps_and_roles() {
     );
 
     $auctioneer = get_role( 'bsync_auctioneer' );
-    if ( $auctioneer && ! $auctioneer->has_cap( BSYNC_AUCTION_MANAGE_CAP ) ) {
-        $auctioneer->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    if ( $auctioneer ) {
+        if ( ! $auctioneer->has_cap( 'read' ) ) {
+            $auctioneer->add_cap( 'read' );
+        }
+
+        if ( ! $auctioneer->has_cap( BSYNC_AUCTION_MANAGE_CAP ) ) {
+            $auctioneer->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+        }
     }
 
     // Integrate with the existing bsync member manager role when present.
     $member_manager = get_role( 'bsync_member_manager' );
     if ( $member_manager ) {
         $member_manager->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    }
+
+    bsync_auction_sync_member_manager_caps();
+}
+
+/**
+ * Register auction caps/roles immediately after bsync-member finishes its sync.
+ *
+ * Fired via the 'bsync_member_sync_operator_roles' action (init@999) so
+ * Auction hooks in after Member already created/updated all its roles.
+ *
+ * @return void
+ */
+function bsync_auction_register_caps_on_member_sync() {
+    $admin = get_role( 'administrator' );
+    if ( $admin ) {
+        $admin->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    }
+
+    // Ensure bsync_auctioneer role exists.
+    $auctioneer = get_role( 'bsync_auctioneer' );
+    if ( ! $auctioneer ) {
+        add_role(
+            'bsync_auctioneer',
+            __( 'Bsync Auctioneer', 'bsync-auction' ),
+            array(
+                'read'                    => true,
+                BSYNC_AUCTION_MANAGE_CAP => true,
+            )
+        );
+        $auctioneer = get_role( 'bsync_auctioneer' );
+    }
+
+    if ( $auctioneer ) {
+        $auctioneer->add_cap( 'read' );
+        $auctioneer->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    }
+
+    // Any role that can manage members should also manage auctions.
+    bsync_auction_sync_member_manager_caps();
+}
+
+/**
+ * Keep core auction role caps in sync on runtime (without reactivation).
+ *
+ * @return void
+ */
+function bsync_auction_sync_core_caps() {
+    $admin = get_role( 'administrator' );
+    if ( $admin ) {
+        $admin->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+        $admin->add_cap( 'read' );
+    }
+
+    $auctioneer = get_role( 'bsync_auctioneer' );
+    if ( ! $auctioneer ) {
+        add_role(
+            'bsync_auctioneer',
+            __( 'Bsync Auctioneer', 'bsync-auction' ),
+            array(
+                'read'                    => true,
+                BSYNC_AUCTION_MANAGE_CAP => true,
+            )
+        );
+        $auctioneer = get_role( 'bsync_auctioneer' );
+    }
+
+    if ( $auctioneer ) {
+        $auctioneer->add_cap( 'read' );
+        $auctioneer->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    }
+
+    $member_manager = get_role( 'bsync_member_manager' );
+    if ( $member_manager ) {
+        $member_manager->add_cap( 'read' );
+        $member_manager->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+    }
+}
+
+/**
+ * Sync auction manage capability to all member-manager style roles.
+ *
+ * Any role that can already manage members should also be able to manage
+ * auctions and items, matching bsync-member's admin-manager model.
+ *
+ * @return void
+ */
+function bsync_auction_sync_member_manager_caps() {
+    global $wp_roles;
+
+    if ( ! ( $wp_roles instanceof WP_Roles ) || empty( $wp_roles->roles ) ) {
+        return;
+    }
+
+    foreach ( array_keys( $wp_roles->roles ) as $role_slug ) {
+        $role = get_role( $role_slug );
+        if ( ! $role ) {
+            continue;
+        }
+
+        if ( ! $role->has_cap( 'bsync_manage_members' ) ) {
+            continue;
+        }
+
+        if ( ! $role->has_cap( 'read' ) ) {
+            $role->add_cap( 'read' );
+        }
+
+        if ( ! $role->has_cap( BSYNC_AUCTION_MANAGE_CAP ) ) {
+            $role->add_cap( BSYNC_AUCTION_MANAGE_CAP );
+        }
     }
 }
 
@@ -109,4 +235,84 @@ function bsync_auction_create_assignment_table() {
     ) {$charset_collate};";
 
     dbDelta( $sql );
+}
+
+/**
+ * Ensure a default frontend add-item page exists.
+ *
+ * @return void
+ */
+function bsync_auction_maybe_create_default_add_item_page() {
+    $stored_id = absint( get_option( 'bsync_auction_add_item_page_id', 0 ) );
+    if ( $stored_id > 0 ) {
+        $existing = get_post( $stored_id );
+        if ( $existing instanceof WP_Post && 'page' === $existing->post_type && 'trash' !== $existing->post_status ) {
+            return;
+        }
+    }
+
+    $existing_page = get_page_by_path( 'auction-item-entry' );
+    if ( $existing_page instanceof WP_Post ) {
+        update_option( 'bsync_auction_add_item_page_id', (int) $existing_page->ID );
+        if ( ! get_transient( 'bsync_auction_add_item_page_notice' ) ) {
+            set_transient( 'bsync_auction_add_item_page_notice', (int) $existing_page->ID, HOUR_IN_SECONDS );
+        }
+        return;
+    }
+
+    $page_id = wp_insert_post(
+        array(
+            'post_type'    => 'page',
+            'post_title'   => __( 'Auction Item Entry', 'bsync-auction' ),
+            'post_name'    => 'auction-item-entry',
+            'post_status'  => 'publish',
+            'post_content' => '[bsync_auction_add_item_form]',
+        ),
+        true
+    );
+
+    if ( is_wp_error( $page_id ) || $page_id <= 0 ) {
+        return;
+    }
+
+    update_option( 'bsync_auction_add_item_page_id', (int) $page_id );
+    set_transient( 'bsync_auction_add_item_page_notice', (int) $page_id, HOUR_IN_SECONDS );
+}
+
+/**
+ * Show one-time admin notice with generated add-item page links.
+ *
+ * @return void
+ */
+function bsync_auction_render_add_item_page_notice() {
+    if ( ! is_admin() || ! bsync_auction_can_clerk_auction() ) {
+        return;
+    }
+
+    $page_id = absint( get_transient( 'bsync_auction_add_item_page_notice' ) );
+    if ( $page_id <= 0 ) {
+        return;
+    }
+
+    $page = get_post( $page_id );
+    if ( ! ( $page instanceof WP_Post ) || 'page' !== $page->post_type || 'trash' === $page->post_status ) {
+        delete_transient( 'bsync_auction_add_item_page_notice' );
+        return;
+    }
+
+    $view_url = get_permalink( $page_id );
+    $edit_url = get_edit_post_link( $page_id, '' );
+
+    echo '<div class="notice notice-success is-dismissible"><p>';
+    echo '<strong>' . esc_html__( 'Bsync Auction', 'bsync-auction' ) . '</strong> ';
+    echo esc_html__( 'created the Auction Item Entry page for scoped item submission.', 'bsync-auction' ) . ' ';
+    if ( $view_url ) {
+        echo '<a href="' . esc_url( $view_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html__( 'View page', 'bsync-auction' ) . '</a>';
+    }
+    if ( $edit_url ) {
+        echo ' | <a href="' . esc_url( $edit_url ) . '">' . esc_html__( 'Edit page', 'bsync-auction' ) . '</a>';
+    }
+    echo '</p></div>';
+
+    delete_transient( 'bsync_auction_add_item_page_notice' );
 }

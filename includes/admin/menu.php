@@ -56,27 +56,28 @@ function bsync_auction_register_admin_menus() {
         'bsync_auction_render_buyer_receipts_page'
     );
 
-    // Ensure bsync_member_manager users get a visible entry even if they don't see the Auctions menu.
-    if ( current_user_can( 'bsync_manage_members' ) && ! bsync_auction_can_manage_plugin() ) {
+    // Ensure scoped clerks/managers get a visible entry even without full plugin manage capability.
+    if ( bsync_auction_can_clerk_auction() && ! bsync_auction_can_manage_plugin() ) {
         add_menu_page(
             __( 'Auction Item Grid', 'bsync-auction' ),
             __( 'Auction Item Grid', 'bsync-auction' ),
-            'bsync_manage_members',
+            'read',
             'bsync-auction-manager-grid',
             'bsync_auction_render_manager_item_grid_page',
             'dashicons-list-view',
             30
         );
-    }
 
-    add_submenu_page(
-        $parent_slug,
-        __( 'Auctioneers', 'bsync-auction' ),
-        __( 'Auctioneers', 'bsync-auction' ),
-        $plugin_menu_cap,
-        'bsync-auction-auctioneers',
-        'bsync_auction_render_auctioneers_page'
-    );
+        add_menu_page(
+            __( 'Buyer Receipts', 'bsync-auction' ),
+            __( 'Buyer Receipts', 'bsync-auction' ),
+            'read',
+            'bsync-auction-buyer-receipts',
+            'bsync_auction_render_buyer_receipts_page',
+            'dashicons-tickets-alt',
+            31
+        );
+    }
 
     add_submenu_page(
         $parent_slug,
@@ -86,63 +87,30 @@ function bsync_auction_register_admin_menus() {
         'bsync-auction-how-it-works',
         'bsync_auction_render_how_it_works_page'
     );
-}
 
-function bsync_auction_render_auctioneers_page() {
-    if ( ! bsync_auction_can_manage_plugin() ) {
-        wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
-    }
-
-    if ( isset( $_POST['bsync_auctioneer_nonce'] ) ) {
-        $nonce = sanitize_text_field( wp_unslash( $_POST['bsync_auctioneer_nonce'] ) );
-        if ( wp_verify_nonce( $nonce, 'bsync_auctioneer_save' ) ) {
-            $user_id = absint( $_POST['user_id'] ?? 0 );
-            $action  = sanitize_text_field( wp_unslash( $_POST['auctioneer_action'] ?? '' ) );
-            $user    = get_user_by( 'id', $user_id );
-
-            if ( $user instanceof WP_User ) {
-                if ( 'grant' === $action ) {
-                    $user->add_role( 'bsync_auctioneer' );
-                }
-                if ( 'revoke' === $action ) {
-                    $user->remove_role( 'bsync_auctioneer' );
-                }
+    // Add Auction Item entry point for staff (clerks/auctioneers).
+    if ( bsync_auction_can_clerk_auction() ) {
+        $add_item_page_id = (int) get_option( 'bsync_auction_add_item_page_id', 0 );
+        if ( $add_item_page_id > 0 ) {
+            $add_item_url = get_permalink( $add_item_page_id );
+            if ( $add_item_url ) {
+                add_submenu_page(
+                    $parent_slug,
+                    __( 'Add Auction Item', 'bsync-auction' ),
+                    __( 'Add Auction Item', 'bsync-auction' ),
+                    'read',
+                    'bsync-auction-add-item',
+                    static function() {
+                        $page_id = (int) get_option( 'bsync_auction_add_item_page_id', 0 );
+                        if ( $page_id > 0 ) {
+                            wp_safe_remote_get( get_permalink( $page_id ) );
+                            echo '<script>window.location.href = ' . wp_json_encode( get_permalink( $page_id ) ) . ';</script>';
+                        }
+                    }
+                );
             }
         }
     }
-
-    $users = get_users(
-        array(
-            'orderby' => 'display_name',
-            'order'   => 'ASC',
-            'number'  => 300,
-        )
-    );
-
-    echo '<div class="wrap">';
-    echo '<h1>' . esc_html__( 'Auctioneers', 'bsync-auction' ) . '</h1>';
-    echo '<p>' . esc_html__( 'Assign or remove the auctioneer role for existing users.', 'bsync-auction' ) . '</p>';
-    echo '<table class="widefat striped"><thead><tr><th>' . esc_html__( 'User', 'bsync-auction' ) . '</th><th>' . esc_html__( 'Email', 'bsync-auction' ) . '</th><th>' . esc_html__( 'Auctioneer', 'bsync-auction' ) . '</th><th>' . esc_html__( 'Action', 'bsync-auction' ) . '</th></tr></thead><tbody>';
-
-    foreach ( $users as $user ) {
-        $is_auctioneer = in_array( 'bsync_auctioneer', (array) $user->roles, true );
-        echo '<tr>';
-        echo '<td>' . esc_html( $user->display_name ) . '</td>';
-        echo '<td>' . esc_html( $user->user_email ) . '</td>';
-        echo '<td>' . ( $is_auctioneer ? esc_html__( 'Yes', 'bsync-auction' ) : esc_html__( 'No', 'bsync-auction' ) ) . '</td>';
-        echo '<td>';
-        echo '<form method="post">';
-        wp_nonce_field( 'bsync_auctioneer_save', 'bsync_auctioneer_nonce' );
-        echo '<input type="hidden" name="user_id" value="' . esc_attr( $user->ID ) . '" />';
-        echo '<input type="hidden" name="auctioneer_action" value="' . ( $is_auctioneer ? 'revoke' : 'grant' ) . '" />';
-        submit_button( $is_auctioneer ? __( 'Revoke', 'bsync-auction' ) : __( 'Grant', 'bsync-auction' ), 'secondary', 'submit', false );
-        echo '</form>';
-        echo '</td>';
-        echo '</tr>';
-    }
-
-    echo '</tbody></table>';
-    echo '</div>';
 }
 
 function bsync_auction_render_how_it_works_page() {

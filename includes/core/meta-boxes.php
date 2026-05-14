@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 add_action( 'add_meta_boxes', 'bsync_auction_register_meta_boxes' );
 add_action( 'save_post', 'bsync_auction_save_meta_boxes', 10, 2 );
 add_action( 'admin_enqueue_scripts', 'bsync_auction_enqueue_assignment_assets' );
+add_action( 'admin_enqueue_scripts', 'bsync_auction_enqueue_item_order_assets' );
 add_action( 'wp_ajax_bsync_auction_assignment_add', 'bsync_auction_ajax_assignment_add' );
 add_action( 'wp_ajax_bsync_auction_assignment_remove', 'bsync_auction_ajax_assignment_remove' );
 add_action( 'restrict_manage_posts', 'bsync_auction_render_bulk_assignment_controls', 10, 2 );
@@ -44,6 +45,37 @@ function bsync_auction_enqueue_assignment_assets( $hook ) {
             'removed'      => __( 'Assignment removed.', 'bsync-auction' ),
             'saveFailed'   => __( 'Could not save assignment.', 'bsync-auction' ),
             'removeFailed' => __( 'Could not remove assignment.', 'bsync-auction' ),
+        )
+    );
+}
+
+function bsync_auction_enqueue_item_order_assets( $hook ) {
+    if ( ! in_array( $hook, array( 'post.php', 'post-new.php' ), true ) ) {
+        return;
+    }
+
+    $screen = get_current_screen();
+    if ( ! $screen || BSYNC_AUCTION_ITEM_CPT !== $screen->post_type ) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'bsync-auction-admin-item-order',
+        BSYNC_AUCTION_PLUGIN_URL . 'assets/js/admin-item-order.js',
+        array( 'jquery' ),
+        BSYNC_AUCTION_VERSION,
+        true
+    );
+
+    wp_localize_script(
+        'bsync-auction-admin-item-order',
+        'BsyncAuctionItemOrder',
+        array(
+            'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+            'nonce'        => wp_create_nonce( 'bsync_auction_check_order_number_duplicate' ),
+            'itemId'       => absint( $_GET['post'] ?? 0 ),
+            'useSuggested' => __( 'Use suggested number', 'bsync-auction' ),
+            'checkFailed'  => __( 'Could not validate order number right now.', 'bsync-auction' ),
         )
     );
 }
@@ -251,11 +283,11 @@ function bsync_auction_render_auction_meta_box( $post ) {
                 <?php esc_html_e( 'Manage Staff Assignments', 'bsync-auction' ); ?>
             </button>
         </p>
-        <div id="bsync-auction-assignments-modal-<?php echo esc_attr( $post->ID ); ?>" class="bsync-auction-assignments-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:100000;">
-            <div style="max-width:880px;margin:40px auto;background:#fff;border-radius:8px;padding:18px;max-height:82vh;overflow:auto;position:relative;">
-                <button type="button" class="button-link bsync-auction-close-assignments-modal" style="position:absolute;right:12px;top:8px;font-size:20px;line-height:1;">&times;</button>
-                <h3 style="margin-top:0;"><?php esc_html_e( 'Auction Staff Assignments', 'bsync-auction' ); ?></h3>
-                <p class="description"><?php esc_html_e( 'Assign users to this auction as auctioneers, managers, clerks, or staff.', 'bsync-auction' ); ?></p>
+        <div id="bsync-auction-assignments-modal-<?php echo esc_attr( $post->ID ); ?>" class="bsync-auction-assignments-modal bsync-admin-modal" style="display:none;">
+            <div class="bsync-admin-modal-inner" style="max-width:880px;">
+                <button type="button" class="button-link bsync-auction-close-assignments-modal bsync-admin-modal-close">&times;</button>
+                <h3><?php esc_html_e( 'Auction Staff Assignments', 'bsync-auction' ); ?></h3>
+                <p class="description"><?php esc_html_e( 'Assign users to this auction as auctioneers or clerks.', 'bsync-auction' ); ?></p>
 
                 <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin:12px 0;">
                     <div>
@@ -467,19 +499,19 @@ function bsync_auction_render_item_meta_box( $post ) {
 
     $item_number = get_post_meta( $post->ID, 'bsync_auction_item_number', true );
     $order_num   = get_post_meta( $post->ID, 'bsync_auction_order_number', true );
+    $auction_id  = (int) get_post_meta( $post->ID, 'bsync_auction_id', true );
 
     if ( '' === (string) $item_number ) {
         $item_number = bsync_auction_generate_next_item_number();
     }
 
     if ( '' === (string) $order_num ) {
-        $order_num = 1;
+        $order_num = bsync_auction_get_next_available_order_number( $auction_id, (int) $post->ID );
     }
     $opening_bid = get_post_meta( $post->ID, 'bsync_auction_opening_bid', true );
     $current_bid = get_post_meta( $post->ID, 'bsync_auction_current_bid', true );
     $sold_price  = get_post_meta( $post->ID, 'bsync_auction_sold_price_internal', true );
     $buyer_id    = (int) get_post_meta( $post->ID, 'bsync_auction_buyer_id', true );
-    $auction_id  = (int) get_post_meta( $post->ID, 'bsync_auction_id', true );
     $status      = get_post_meta( $post->ID, 'bsync_auction_item_status', true );
 
     if ( '' === $status ) {
@@ -527,7 +559,16 @@ function bsync_auction_render_item_meta_box( $post ) {
         </tr>
         <tr>
             <th><label for="bsync_auction_order_number"><?php esc_html_e( 'Order Number', 'bsync-auction' ); ?></label></th>
-            <td><input type="number" id="bsync_auction_order_number" name="bsync_auction_order_number" value="<?php echo esc_attr( $order_num ); ?>" /></td>
+            <td>
+                <input type="number" id="bsync_auction_order_number" name="bsync_auction_order_number" value="<?php echo esc_attr( $order_num ); ?>" min="1" step="0.01" />
+                <p class="description"><?php esc_html_e( 'Must be unique within the selected auction. New items default to the next available whole number; decimals can be used for mid-sale insertions.', 'bsync-auction' ); ?></p>
+                <div id="bsync_auction_order_duplicate_alert" class="notice notice-warning inline" style="display:none;margin:8px 0 0;">
+                    <p style="margin:8px 0;">
+                        <span class="bsync-auction-order-duplicate-text" aria-live="polite"></span>
+                        <button type="button" class="button-link bsync-auction-order-apply-suggested" data-suggested="" style="margin-left:4px;"></button>
+                    </p>
+                </div>
+            </td>
         </tr>
         <tr>
             <th><label for="bsync_auction_opening_bid"><?php esc_html_e( 'Opening Bid', 'bsync-auction' ); ?></label></th>
@@ -617,10 +658,22 @@ function bsync_auction_save_meta_boxes( $post_id, $post ) {
         update_post_meta( $post_id, 'bsync_auction_item_number', $existing_item_number );
     }
 
-    $buyer_id = absint( $_POST['bsync_auction_buyer_id'] ?? 0 );
+    $buyer_id   = absint( $_POST['bsync_auction_buyer_id'] ?? 0 );
+    $auction_id = absint( $_POST['bsync_auction_id'] ?? 0 );
 
-    update_post_meta( $post_id, 'bsync_auction_id', absint( $_POST['bsync_auction_id'] ?? 0 ) );
-    update_post_meta( $post_id, 'bsync_auction_order_number', max( 1, (int) ( $_POST['bsync_auction_order_number'] ?? 1 ) ) );
+    $raw_order_number = wp_unslash( $_POST['bsync_auction_order_number'] ?? '' );
+    $order_number     = bsync_auction_sanitize_order_number( $raw_order_number, '' );
+
+    if ( '' === $order_number ) {
+        $order_number = bsync_auction_get_next_available_order_number( $auction_id, $post_id );
+    }
+
+    if ( bsync_auction_order_number_exists( $auction_id, $order_number, $post_id ) ) {
+        $order_number = bsync_auction_get_next_available_order_number( $auction_id, $post_id );
+    }
+
+    update_post_meta( $post_id, 'bsync_auction_id', $auction_id );
+    update_post_meta( $post_id, 'bsync_auction_order_number', $order_number );
     update_post_meta( $post_id, 'bsync_auction_opening_bid', bsync_auction_money( $_POST['bsync_auction_opening_bid'] ?? 0 ) );
     update_post_meta( $post_id, 'bsync_auction_current_bid', bsync_auction_money( $_POST['bsync_auction_current_bid'] ?? 0 ) );
     update_post_meta( $post_id, 'bsync_auction_sold_price_internal', bsync_auction_money( $_POST['bsync_auction_sold_price_internal'] ?? 0 ) );
@@ -644,6 +697,118 @@ function bsync_auction_save_meta_boxes( $post_id, $post ) {
 
 function bsync_auction_money( $value ) {
     return number_format( (float) $value, 2, '.', '' );
+}
+
+/**
+ * Normalize order number input to >= 1 and string format.
+ *
+ * @param mixed  $value   Raw input value.
+ * @param string $default Default return when input is invalid.
+ * @return string
+ */
+function bsync_auction_sanitize_order_number( $value, $default = '1' ) {
+    $value = trim( sanitize_text_field( (string) $value ) );
+    if ( '' === $value || ! is_numeric( $value ) ) {
+        return (string) $default;
+    }
+
+    $numeric = round( (float) $value, 2 );
+    if ( $numeric < 1 ) {
+        return (string) $default;
+    }
+
+    if ( abs( $numeric - round( $numeric ) ) < 0.00001 ) {
+        return (string) (int) round( $numeric );
+    }
+
+    return rtrim( rtrim( number_format( $numeric, 2, '.', '' ), '0' ), '.' );
+}
+
+/**
+ * Check if an order number already exists for an auction.
+ *
+ * @param int         $auction_id       Auction ID.
+ * @param string|int|float $order_number Order number to test.
+ * @param int         $exclude_post_id  Optional item post ID to exclude.
+ * @return bool
+ */
+function bsync_auction_order_number_exists( $auction_id, $order_number, $exclude_post_id = 0 ) {
+    $auction_id    = absint( $auction_id );
+    $exclude_post_id = absint( $exclude_post_id );
+    $normalized    = bsync_auction_sanitize_order_number( $order_number, '' );
+
+    if ( '' === $normalized ) {
+        return false;
+    }
+
+    $target = (float) $normalized;
+
+    $query = array(
+        'post_type'      => BSYNC_AUCTION_ITEM_CPT,
+        'post_status'    => array( 'publish', 'draft', 'pending', 'future', 'private' ),
+        'posts_per_page' => -1,
+        'fields'         => 'ids',
+        'meta_query'     => array(),
+    );
+
+    if ( $auction_id > 0 ) {
+        $query['meta_query'][] = array(
+            'key'   => 'bsync_auction_id',
+            'value' => $auction_id,
+        );
+    } else {
+        $query['meta_query'][] = array(
+            'relation' => 'OR',
+            array(
+                'key'     => 'bsync_auction_id',
+                'compare' => 'NOT EXISTS',
+            ),
+            array(
+                'key'   => 'bsync_auction_id',
+                'value' => 0,
+            ),
+        );
+    }
+
+    $item_ids = get_posts( $query );
+
+    foreach ( $item_ids as $item_id ) {
+        $item_id = (int) $item_id;
+
+        if ( $exclude_post_id > 0 && $item_id === $exclude_post_id ) {
+            continue;
+        }
+
+        $existing = bsync_auction_sanitize_order_number( get_post_meta( $item_id, 'bsync_auction_order_number', true ), '' );
+        if ( '' === $existing ) {
+            continue;
+        }
+
+        if ( abs( (float) $existing - $target ) < 0.00001 ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Get the next available whole-number order position for an auction.
+ *
+ * @param int $auction_id      Auction ID.
+ * @param int $exclude_post_id Optional item post ID to exclude.
+ * @return string
+ */
+function bsync_auction_get_next_available_order_number( $auction_id, $exclude_post_id = 0 ) {
+    $auction_id       = absint( $auction_id );
+    $exclude_post_id  = absint( $exclude_post_id );
+    $candidate        = 1;
+
+    while ( bsync_auction_order_number_exists( $auction_id, (string) $candidate, $exclude_post_id ) ) {
+        $candidate++;
+    }
+
+    return (string) $candidate;
 }
 
 function bsync_auction_normalize_datetime( $value ) {

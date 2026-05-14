@@ -231,10 +231,17 @@ function bsync_auction_process_item_import() {
             continue;
         }
 
-        if ( ! bsync_auction_user_can_access_auction_scope( $auction_id ) ) {
+        // Strict context validation for scoped users importing items.
+        $context_result = bsync_auction_resolve_strict_auction_context(
+            $auction_id,
+            0,
+            array( 'audit_action' => 'import_item_line' )
+        );
+        if ( is_wp_error( $context_result ) ) {
             $result['errors'][] = sprintf( __( 'Line %d: you are not assigned to auction_id %d.', 'bsync-auction' ), $line_number, $auction_id );
             continue;
         }
+        $auction_id = (int) $context_result;
 
         $status   = sanitize_key( $record['status'] ?? 'available' );
         $statuses = bsync_auction_get_item_statuses();
@@ -242,7 +249,25 @@ function bsync_auction_process_item_import() {
             $status = 'available';
         }
 
-        $order_number = max( 1, (int) ( $record['order_number'] ?? 1 ) );
+        $raw_order_number = (string) ( $record['order_number'] ?? '' );
+        $order_number     = bsync_auction_sanitize_order_number( $raw_order_number, '' );
+        if ( '' === $order_number ) {
+            $order_number = bsync_auction_get_next_available_order_number( $auction_id );
+            $result['warnings'][] = sprintf(
+                __( 'Line %1$d: missing or invalid order number. Assigned next available whole number %2$s.', 'bsync-auction' ),
+                $line_number,
+                $order_number
+            );
+        } elseif ( bsync_auction_order_number_exists( $auction_id, $order_number ) ) {
+            $replacement  = bsync_auction_get_next_available_order_number( $auction_id );
+            $result['warnings'][] = sprintf(
+                __( 'Line %1$d: duplicate order number %2$s. Assigned next available whole number %3$s.', 'bsync-auction' ),
+                $line_number,
+                $order_number,
+                $replacement
+            );
+            $order_number = $replacement;
+        }
         $opening_bid  = bsync_auction_money( $record['opening_bid'] ?? 0 );
         $current_bid  = bsync_auction_money( $record['current_bid'] ?? 0 );
         $sold_price   = bsync_auction_money( $record['sold_price'] ?? 0 );

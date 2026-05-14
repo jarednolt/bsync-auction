@@ -23,9 +23,7 @@ function bsync_auction_get_assignments_table_name() {
 function bsync_auction_get_assignment_roles() {
     return array(
         'auctioneer' => __( 'Auctioneer', 'bsync-auction' ),
-        'manager'    => __( 'Manager', 'bsync-auction' ),
         'clerk'      => __( 'Clerk', 'bsync-auction' ),
-        'staff'      => __( 'Staff', 'bsync-auction' ),
     );
 }
 

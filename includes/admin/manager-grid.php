@@ -15,6 +15,13 @@ function bsync_auction_enqueue_manager_grid_assets( $hook ) {
         return;
     }
 
+    wp_enqueue_style(
+        'bsync-auction-admin-grid',
+        BSYNC_AUCTION_PLUGIN_URL . 'assets/css/admin-manager-grid.css',
+        array( 'bsync-admin-shared' ),
+        BSYNC_AUCTION_VERSION
+    );
+
     wp_enqueue_script(
         'bsync-auction-admin-grid',
         BSYNC_AUCTION_PLUGIN_URL . 'assets/js/admin-grid.js',
@@ -30,13 +37,18 @@ function bsync_auction_enqueue_manager_grid_assets( $hook ) {
             'ajaxUrl'            => admin_url( 'admin-ajax.php' ),
             'nonce'              => wp_create_nonce( 'bsync_auction_save_item_row' ),
             'quickAddNonce'      => wp_create_nonce( 'bsync_auction_quick_add_item' ),
+            'checkNonce'         => wp_create_nonce( 'bsync_auction_check_order_number_duplicate' ),
             'saving'             => __( 'Saving...', 'bsync-auction' ),
             'saved'              => __( 'Saved', 'bsync-auction' ),
             'failed'             => __( 'Save failed', 'bsync-auction' ),
+            'useSuggested'       => __( 'Use suggested number', 'bsync-auction' ),
             'quickAddButton'     => __( 'Quick Add Next', 'bsync-auction' ),
-            'quickAddPrompt'     => __( 'Enter the new item title:', 'bsync-auction' ),
+            'quickAddTitle'      => __( 'Add Auction Item', 'bsync-auction' ),
+            'quickAddSave'       => __( 'Add Item', 'bsync-auction' ),
+            'quickAddCancel'     => __( 'Cancel', 'bsync-auction' ),
             'quickAddAdded'      => __( 'New item added after sold row.', 'bsync-auction' ),
             'quickAddMissingCtx' => __( 'This row is not linked to an auction.', 'bsync-auction' ),
+            'quickAddSaving'     => __( 'Adding item...', 'bsync-auction' ),
             'noBuyer'            => __( 'No Buyer', 'bsync-auction' ),
             'linkedUserTemplate' => __( 'Linked user: %s', 'bsync-auction' ),
             'statuses'           => bsync_auction_get_item_statuses(),
@@ -49,7 +61,26 @@ function bsync_auction_render_manager_item_grid_page() {
         wp_die( esc_html__( 'You do not have permission to access this page.', 'bsync-auction' ) );
     }
 
-    $auction_filter = absint( $_GET['auction_id'] ?? 0 );
+    $requested_auction_id = absint( $_GET['auction_id'] ?? 0 );
+
+    // Strict context validation for scoped users.
+    $auction_filter = 0;
+    if ( $requested_auction_id > 0 ) {
+        $context_result = bsync_auction_resolve_strict_auction_context(
+            $requested_auction_id,
+            0,
+            array( 'audit_action' => 'view_manager_grid_filter' )
+        );
+        if ( is_wp_error( $context_result ) ) {
+            // Scoped user tried to filter by an auction they don't have access to.
+            wp_die(
+                esc_html__( 'You do not have permission to view that auction.', 'bsync-auction' ),
+                esc_html__( 'Forbidden', 'bsync-auction' ),
+                403
+            );
+        }
+        $auction_filter = (int) $context_result;
+    }
 
     $auctions = get_posts(
         array(
@@ -62,10 +93,6 @@ function bsync_auction_render_manager_item_grid_page() {
     );
 
     $auctions = bsync_auction_filter_auctions_by_scope( $auctions );
-
-    if ( $auction_filter > 0 && ! bsync_auction_user_can_access_auction_scope( $auction_filter ) ) {
-        $auction_filter = 0;
-    }
 
     $query = array(
         'post_type'      => BSYNC_AUCTION_ITEM_CPT,
@@ -92,8 +119,8 @@ function bsync_auction_render_manager_item_grid_page() {
     usort(
         $items,
         static function( $a, $b ) {
-            $a_order = (int) get_post_meta( $a->ID, 'bsync_auction_order_number', true );
-            $b_order = (int) get_post_meta( $b->ID, 'bsync_auction_order_number', true );
+            $a_order = (float) get_post_meta( $a->ID, 'bsync_auction_order_number', true );
+            $b_order = (float) get_post_meta( $b->ID, 'bsync_auction_order_number', true );
 
             if ( $a_order !== $b_order ) {
                 return $a_order <=> $b_order;
@@ -135,7 +162,61 @@ function bsync_auction_render_manager_item_grid_page() {
     }
     echo '</select> ';
     submit_button( __( 'Filter', 'bsync-auction' ), 'secondary', '', false );
+    echo ' <button type="button" class="button button-primary bsync-auction-open-add-item" data-auction-id="' . esc_attr( (string) $auction_filter ) . '">' . esc_html__( 'Add Item', 'bsync-auction' ) . '</button>';
     echo '</form>';
+
+    echo '<div id="bsync-auction-add-item-modal" class="bsync-auction-add-item-modal bsync-admin-modal" style="display:none;">';
+    echo '<div class="bsync-auction-add-item-modal-inner bsync-admin-modal-inner">';
+    echo '<button type="button" class="button-link bsync-auction-close-add-item bsync-admin-modal-close" aria-label="' . esc_attr__( 'Close', 'bsync-auction' ) . '">&times;</button>';
+    echo '<h2>' . esc_html__( 'Add Auction Item', 'bsync-auction' ) . '</h2>';
+    echo '<form id="bsync-auction-add-item-form" enctype="multipart/form-data">';
+    echo '<div class="bsync-auction-add-item-grid">';
+
+    echo '<p><label for="bsync_add_item_title"><strong>' . esc_html__( 'Item Title', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="text" id="bsync_add_item_title" name="title" class="regular-text" required /></p>';
+
+    echo '<p><label for="bsync_add_item_auction"><strong>' . esc_html__( 'Auction', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<select id="bsync_add_item_auction" name="auction_id" required>';
+    echo '<option value="">' . esc_html__( 'Select Auction', 'bsync-auction' ) . '</option>';
+    foreach ( $auctions as $auction ) {
+        echo '<option value="' . esc_attr( (string) $auction->ID ) . '">' . esc_html( $auction->post_title ) . '</option>';
+    }
+    echo '</select></p>';
+
+    echo '<p><label for="bsync_add_item_order"><strong>' . esc_html__( 'Order Number', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="number" id="bsync_add_item_order" name="order_number" min="1" step="0.01" placeholder="' . esc_attr__( 'Auto next available', 'bsync-auction' ) . '" /></p>';
+
+    echo '<p><label for="bsync_add_item_status"><strong>' . esc_html__( 'Status', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<select id="bsync_add_item_status" name="status">';
+    foreach ( $statuses as $status_key => $label ) {
+        echo '<option value="' . esc_attr( $status_key ) . '">' . esc_html( $label ) . '</option>';
+    }
+    echo '</select></p>';
+
+    echo '<p><label for="bsync_add_item_opening"><strong>' . esc_html__( 'Opening Bid', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="number" id="bsync_add_item_opening" name="opening_bid" min="0" step="0.01" value="0.00" /></p>';
+
+    echo '<p><label for="bsync_add_item_current"><strong>' . esc_html__( 'Current Bid', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="number" id="bsync_add_item_current" name="current_bid" min="0" step="0.01" value="0.00" /></p>';
+
+    echo '<p><label for="bsync_add_item_sold"><strong>' . esc_html__( 'Sold Price', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="number" id="bsync_add_item_sold" name="sold_price" min="0" step="0.01" value="0.00" /></p>';
+
+    echo '<p><label for="bsync_add_item_buyer"><strong>' . esc_html__( 'Buyer Number', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="text" id="bsync_add_item_buyer" name="buyer_number" placeholder="' . esc_attr__( 'Optional', 'bsync-auction' ) . '" /></p>';
+
+    echo '<p><label for="bsync_add_item_image"><strong>' . esc_html__( 'Featured Image', 'bsync-auction' ) . '</strong></label><br />';
+    echo '<input type="file" id="bsync_add_item_image" name="featured_image" accept="image/*" /></p>';
+
+    echo '</div>';
+    echo '<p class="bsync-auction-add-item-actions">';
+    echo '<button type="submit" class="button button-primary bsync-auction-submit-add-item">' . esc_html__( 'Add Item', 'bsync-auction' ) . '</button> ';
+    echo '<button type="button" class="button bsync-auction-close-add-item">' . esc_html__( 'Cancel', 'bsync-auction' ) . '</button> ';
+    echo '<span class="bsync-auction-add-item-status" aria-live="polite"></span>';
+    echo '</p>';
+    echo '</form>';
+    echo '</div>';
+    echo '</div>';
 
     echo '<table class="widefat striped">';
     echo '<thead><tr>';
@@ -182,7 +263,7 @@ function bsync_auction_render_manager_item_grid_page() {
         $buyer_number_value  = $buyer_id > 0 ? bsync_auction_get_buyer_number_for_user( $buyer_id ) : '';
         $buyer_display_label = $buyer_user instanceof WP_User ? $buyer_user->display_name : __( 'No Buyer', 'bsync-auction' );
 
-        echo '<td><input type="number" class="small-text bsync-auction-field" data-field="order_number" min="1" step="1" value="' . esc_attr( (string) $order_number ) . '" /></td>';
+        echo '<td><input type="number" class="small-text bsync-auction-field" data-field="order_number" min="1" step="0.01" value="' . esc_attr( (string) $order_number ) . '" /></td>';
         echo '<td><a href="' . esc_url( get_edit_post_link( $item_id ) ) . '">' . esc_html( get_the_title( $item_id ) ) . '</a></td>';
         echo '<td>' . esc_html( $auction_name ) . '</td>';
 
@@ -204,6 +285,10 @@ function bsync_auction_render_manager_item_grid_page() {
         echo '<td>';
         echo '<button type="button" class="button button-primary bsync-auction-save-row">' . esc_html__( 'Save Row', 'bsync-auction' ) . '</button> ';
         echo '<span class="bsync-auction-save-status" aria-live="polite"></span>';
+        echo '<div class="bsync-auction-duplicate-alert" style="display:none;">';
+        echo '<span class="bsync-auction-duplicate-text" aria-live="polite"></span> ';
+        echo '<button type="button" class="button-link bsync-auction-apply-suggested" data-suggested=""></button>';
+        echo '</div>';
         echo '</td>';
 
         echo '</tr>';

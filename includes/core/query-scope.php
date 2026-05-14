@@ -109,3 +109,54 @@ function bsync_auction_filter_auctions_by_scope( $auctions, $user_id = 0 ) {
 
     return $filtered;
 }
+
+/**
+ * Resolve a strict auction context for scoped users.
+ *
+ * Global managers may use context 0 (all auctions) where policy allows.
+ * Scoped users must pass a non-zero auction ID within their assignments.
+ *
+ * @param int $requested_auction_id Requested auction ID.
+ * @param int $user_id              Optional user ID.
+ * @param array<string,mixed> $args Optional behavior args.
+ * @return int|WP_Error
+ */
+function bsync_auction_resolve_strict_auction_context( $requested_auction_id, $user_id = 0, $args = array() ) {
+    $requested_auction_id = absint( $requested_auction_id );
+    $user_id              = absint( $user_id );
+    $args                 = is_array( $args ) ? $args : array();
+
+    $audit_action = isset( $args['audit_action'] ) ? sanitize_key( (string) $args['audit_action'] ) : '';
+
+    if ( bsync_auction_can_manage_plugin( $user_id ) ) {
+        return $requested_auction_id;
+    }
+
+    if ( $requested_auction_id <= 0 ) {
+        if ( $audit_action && function_exists( 'bsync_auction_log_denied_scope_action' ) ) {
+            bsync_auction_log_denied_scope_action(
+                $audit_action,
+                'missing_auction_context',
+                0,
+                array( 'user_id' => $user_id )
+            );
+        }
+
+        return new WP_Error( 'missing_auction', __( 'Auction context is required.', 'bsync-auction' ) );
+    }
+
+    if ( ! bsync_auction_user_can_access_auction_scope( $requested_auction_id, $user_id ) ) {
+        if ( $audit_action && function_exists( 'bsync_auction_log_denied_scope_action' ) ) {
+            bsync_auction_log_denied_scope_action(
+                $audit_action,
+                'forbidden_auction_scope',
+                $requested_auction_id,
+                array( 'user_id' => $user_id )
+            );
+        }
+
+        return new WP_Error( 'forbidden_auction', __( 'You are not allowed to access this auction.', 'bsync-auction' ) );
+    }
+
+    return $requested_auction_id;
+}
