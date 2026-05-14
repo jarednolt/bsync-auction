@@ -133,7 +133,8 @@ function bsync_auction_receipt_mail_content_type() {
  * @return void
  */
 function bsync_auction_enqueue_buyer_receipt_assets( $hook ) {
-    if ( 'auctions_page_bsync-auction-buyer-receipts' !== $hook ) {
+    $allowed_hooks = array( 'auctions_page_bsync-auction-buyer-receipts', 'toplevel_page_bsync-auction-buyer-receipts' );
+    if ( ! in_array( $hook, $allowed_hooks, true ) ) {
         return;
     }
 
