@@ -8,6 +8,7 @@ add_action( 'wp_ajax_bsync_auction_save_item_row', 'bsync_auction_ajax_save_item
 add_action( 'wp_ajax_bsync_auction_quick_add_item', 'bsync_auction_ajax_quick_add_item' );
 add_action( 'wp_ajax_bsync_auction_check_order_number_duplicate', 'bsync_auction_ajax_check_order_number_duplicate' );
 add_action( 'wp_ajax_bsync_auction_frontend_add_item', 'bsync_auction_ajax_frontend_add_item' );
+add_action( 'wp_ajax_bsync_auction_frontend_add_buyer', 'bsync_auction_ajax_frontend_add_buyer' );
 
 /**
  * Convert strict-scope WP_Error into AJAX JSON response.
@@ -26,6 +27,58 @@ function bsync_auction_ajax_send_scope_error( $error ) {
             'code'    => $code,
         ),
         $http_code
+    );
+}
+
+/**
+ * Build a structured duplicate-user error payload with clerk-facing details and edit link.
+ *
+ * @param int    $user_id Existing user ID.
+ * @param string $field   Which field triggered the dupe: email|phone|member_number.
+ * @return array
+ */
+function bsync_auction_duplicate_user_error( int $user_id, string $field ): array {
+    $user        = $user_id > 0 ? get_userdata( $user_id ) : null;
+    $display     = $user ? $user->display_name : '';
+    $first_name  = $user ? (string) $user->first_name : '';
+    $last_name   = $user ? (string) $user->last_name : '';
+    $email       = $user ? (string) $user->user_email : '';
+    $user_login  = $user ? (string) $user->user_login : '';
+    $member_num  = $user ? (string) get_user_meta( $user_id, 'bsync_member_number', true ) : '';
+    $phone       = $user ? (string) get_user_meta( $user_id, 'bsync_member_main_phone', true ) : '';
+    $address     = $user ? (string) get_user_meta( $user_id, 'bsync_member_address', true ) : '';
+    $birthdate   = $user ? (string) get_user_meta( $user_id, 'bsync_member_main_birthdate', true ) : '';
+    $edit_url    = $user_id > 0 ? get_edit_user_link( $user_id ) : '';
+
+    switch ( $field ) {
+        case 'email':
+            $label = __( 'Email already in use', 'bsync-auction' );
+            break;
+        case 'phone':
+            $label = __( 'Phone number already in use', 'bsync-auction' );
+            break;
+        case 'member_number':
+            $label = __( 'Buyer / Member Number is already assigned', 'bsync-auction' );
+            break;
+        default:
+            $label = __( 'Duplicate value', 'bsync-auction' );
+    }
+
+    return array(
+        'message'   => $label,
+        'duplicate' => array(
+            'userId'       => $user_id,
+            'userLogin'    => $user_login,
+            'displayName'  => $display,
+            'firstName'    => $first_name,
+            'lastName'     => $last_name,
+            'email'        => $email,
+            'memberNumber' => $member_num,
+            'phone'        => $phone,
+            'address'      => $address,
+            'birthdate'    => $birthdate,
+            'editUrl'      => $edit_url,
+        ),
     );
 }
 
@@ -452,6 +505,300 @@ function bsync_auction_ajax_frontend_add_item() {
             'editUrl'     => get_edit_post_link( $item_id, '' ),
             'auctionId'   => (int) $auction_id,
             'auctionName' => get_the_title( $auction_id ),
+        )
+    );
+}
+
+/**
+ * Add buyer/user from frontend clerk form.
+ *
+ * Supports phone-only registration (email optional).
+ *
+ * @return void
+ */
+function bsync_auction_ajax_frontend_add_buyer() {
+    if ( ! bsync_auction_can_clerk_auction() ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'bsync-auction' ) ), 403 );
+    }
+
+    $nonce = sanitize_text_field( wp_unslash( $_POST['nonce'] ?? '' ) );
+    if ( ! wp_verify_nonce( $nonce, 'bsync_auction_frontend_add_buyer' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid security token.', 'bsync-auction' ) ), 403 );
+    }
+
+    $auction_id = absint( $_POST['auction_id'] ?? 0 );
+    if ( $auction_id <= 0 || BSYNC_AUCTION_AUCTION_CPT !== get_post_type( $auction_id ) ) {
+        wp_send_json_error( array( 'message' => __( 'Invalid auction.', 'bsync-auction' ) ), 400 );
+    }
+
+    $auction_id = bsync_auction_resolve_strict_auction_context(
+        $auction_id,
+        0,
+        array(
+            'audit_action' => 'frontend_add_buyer',
+        )
+    );
+
+    if ( is_wp_error( $auction_id ) ) {
+        bsync_auction_ajax_send_scope_error( $auction_id );
+    }
+
+    $existing_user_id = absint( $_POST['existing_user_id'] ?? 0 );
+    $first_name = sanitize_text_field( wp_unslash( $_POST['first_name'] ?? '' ) );
+    $last_name  = sanitize_text_field( wp_unslash( $_POST['last_name'] ?? '' ) );
+    $email_raw  = sanitize_text_field( wp_unslash( $_POST['email'] ?? '' ) );
+    $phone_raw  = sanitize_text_field( wp_unslash( $_POST['phone'] ?? '' ) );
+    $address    = sanitize_textarea_field( wp_unslash( $_POST['address'] ?? '' ) );
+    $birthdate  = sanitize_text_field( wp_unslash( $_POST['birthdate'] ?? '' ) );
+
+    if ( $existing_user_id > 0 ) {
+        $existing_user = get_userdata( $existing_user_id );
+        if ( ! ( $existing_user instanceof WP_User ) ) {
+            wp_send_json_error( array( 'message' => __( 'Selected existing user no longer exists.', 'bsync-auction' ) ), 404 );
+        }
+
+        if ( '' !== trim( $email_raw ) ) {
+            $email = sanitize_email( $email_raw );
+            if ( '' === $email || ! is_email( $email ) ) {
+                wp_send_json_error( array( 'message' => __( 'Email address is invalid.', 'bsync-auction' ) ), 400 );
+            }
+
+            $email_owner = (int) email_exists( $email );
+            if ( $email_owner > 0 && $email_owner !== $existing_user_id ) {
+                wp_send_json_error( bsync_auction_duplicate_user_error( $email_owner, 'email' ), 400 );
+            }
+
+            if ( $email !== $existing_user->user_email ) {
+                $email_update = wp_update_user(
+                    array(
+                        'ID'         => $existing_user_id,
+                        'user_email' => $email,
+                    )
+                );
+                if ( is_wp_error( $email_update ) ) {
+                    wp_send_json_error( array( 'message' => $email_update->get_error_message() ), 400 );
+                }
+            }
+        }
+
+        $requested_number = trim( sanitize_text_field( wp_unslash( $_POST['buyer_number'] ?? '' ) ) );
+        $buyer_number     = (string) get_user_meta( $existing_user_id, 'bsync_member_number', true );
+
+        if ( '' !== $requested_number && $requested_number !== $buyer_number ) {
+            $number_owner = bsync_auction_get_user_id_by_member_number( $requested_number, $existing_user_id );
+            if ( $number_owner > 0 ) {
+                wp_send_json_error( bsync_auction_duplicate_user_error( (int) $number_owner, 'member_number' ), 400 );
+            }
+
+            $buyer_number = $requested_number;
+            update_user_meta( $existing_user_id, 'bsync_member_number', $buyer_number );
+        } elseif ( '' === $buyer_number ) {
+            $buyer_number = '' !== $requested_number ? $requested_number : (string) bsync_auction_get_next_available_member_number();
+            $number_owner = bsync_auction_get_user_id_by_member_number( $buyer_number, $existing_user_id );
+            if ( $number_owner > 0 ) {
+                wp_send_json_error( bsync_auction_duplicate_user_error( (int) $number_owner, 'member_number' ), 400 );
+            }
+            update_user_meta( $existing_user_id, 'bsync_member_number', $buyer_number );
+        }
+
+        if ( '' !== $first_name || '' !== $last_name ) {
+            $display_name = trim( $first_name . ' ' . $last_name );
+            if ( '' === $display_name ) {
+                $display_name = $existing_user->display_name;
+            }
+
+            $update_names = wp_update_user(
+                array(
+                    'ID'           => $existing_user_id,
+                    'first_name'   => $first_name,
+                    'last_name'    => $last_name,
+                    'display_name' => $display_name,
+                )
+            );
+            if ( is_wp_error( $update_names ) ) {
+                wp_send_json_error( array( 'message' => $update_names->get_error_message() ), 400 );
+            }
+        }
+
+        $phone_normalized = preg_replace( '/[^0-9+]/', '', (string) $phone_raw );
+        if ( '' !== trim( (string) $phone_normalized ) ) {
+            $existing_phone_users = get_users(
+                array(
+                    'number'     => 1,
+                    'fields'     => 'ids',
+                    'meta_key'   => 'bsync_member_main_phone',
+                    'meta_value' => $phone_normalized,
+                    'exclude'    => array( $existing_user_id ),
+                )
+            );
+
+            if ( ! empty( $existing_phone_users ) ) {
+                wp_send_json_error( bsync_auction_duplicate_user_error( (int) $existing_phone_users[0], 'phone' ), 400 );
+            }
+
+            update_user_meta( $existing_user_id, 'bsync_member_main_phone', $phone_normalized );
+        }
+
+        if ( '' !== trim( $address ) ) {
+            update_user_meta( $existing_user_id, 'bsync_member_address', $address );
+        }
+
+        if ( '' !== trim( $birthdate ) ) {
+            update_user_meta( $existing_user_id, 'bsync_member_main_birthdate', $birthdate );
+        }
+
+        $registered_auctions = get_user_meta( $existing_user_id, 'bsync_auction_registered_auctions', true );
+        if ( ! is_array( $registered_auctions ) ) {
+            $registered_auctions = array();
+        }
+
+        $already_registered = in_array( (int) $auction_id, array_map( 'absint', $registered_auctions ), true );
+        if ( ! $already_registered ) {
+            $registered_auctions[] = (int) $auction_id;
+            $registered_auctions   = array_values( array_unique( array_map( 'absint', $registered_auctions ) ) );
+            update_user_meta( $existing_user_id, 'bsync_auction_registered_auctions', $registered_auctions );
+        }
+
+        $fresh_user = get_userdata( $existing_user_id );
+
+        wp_send_json_success(
+            array(
+                'message'         => $already_registered
+                    ? __( 'Existing buyer is already registered for this auction.', 'bsync-auction' )
+                    : __( 'Existing buyer registered successfully.', 'bsync-auction' ),
+                'existingUser'    => true,
+                'userId'          => (int) $existing_user_id,
+                'buyerNumber'     => (string) $buyer_number,
+                'username'        => $fresh_user instanceof WP_User ? (string) $fresh_user->user_login : (string) $existing_user->user_login,
+                'nextBuyerNumber' => (string) bsync_auction_get_next_available_member_number(),
+                'displayName'     => $fresh_user instanceof WP_User ? (string) $fresh_user->display_name : (string) $existing_user->display_name,
+                'auctionId'       => (int) $auction_id,
+                'auctionName'     => get_the_title( (int) $auction_id ),
+            )
+        );
+    }
+
+    if ( '' === $first_name && '' === $last_name ) {
+        wp_send_json_error( array( 'message' => __( 'Name is required.', 'bsync-auction' ) ), 400 );
+    }
+
+    $email = '';
+    if ( '' !== trim( $email_raw ) ) {
+        $email = sanitize_email( $email_raw );
+        if ( '' === $email || ! is_email( $email ) ) {
+            wp_send_json_error( array( 'message' => __( 'Email address is invalid.', 'bsync-auction' ) ), 400 );
+        }
+
+        if ( email_exists( $email ) ) {
+            $dupe_id = (int) email_exists( $email );
+            wp_send_json_error( bsync_auction_duplicate_user_error( $dupe_id, 'email' ), 400 );
+        }
+    }
+
+    $phone_normalized = preg_replace( '/[^0-9+]/', '', (string) $phone_raw );
+    if ( '' === $email && '' === trim( (string) $phone_normalized ) ) {
+        wp_send_json_error( array( 'message' => __( 'Provide at least an email or phone number.', 'bsync-auction' ) ), 400 );
+    }
+
+    if ( '' !== trim( (string) $phone_normalized ) ) {
+        $existing_phone_users = get_users(
+            array(
+                'number'     => 1,
+                'fields'     => 'ids',
+                'meta_key'   => 'bsync_member_main_phone',
+                'meta_value' => $phone_normalized,
+            )
+        );
+        if ( ! empty( $existing_phone_users ) ) {
+            wp_send_json_error( bsync_auction_duplicate_user_error( (int) $existing_phone_users[0], 'phone' ), 400 );
+        }
+    }
+
+    $requested_number = trim( sanitize_text_field( wp_unslash( $_POST['buyer_number'] ?? '' ) ) );
+    if ( '' === $requested_number ) {
+        $buyer_number = (string) bsync_auction_get_next_available_member_number();
+    } else {
+        $buyer_number = $requested_number;
+    }
+
+    $number_owner = bsync_auction_get_user_id_by_member_number( $buyer_number, 0 );
+    if ( $number_owner > 0 ) {
+        wp_send_json_error( bsync_auction_duplicate_user_error( (int) $number_owner, 'member_number' ), 400 );
+    }
+
+    $display_name = trim( $first_name . ' ' . $last_name );
+    if ( '' === $display_name ) {
+        $display_name = $first_name ? $first_name : $last_name;
+    }
+
+    $username_seed = '' !== $email
+        ? current( explode( '@', $email ) )
+        : sanitize_title( trim( $first_name . '-' . $last_name ) );
+
+    if ( '' === $username_seed ) {
+        $username_seed = 'buyer';
+    }
+
+    $username_seed = sanitize_user( str_replace( '+', '_', (string) $username_seed ), true );
+    if ( '' === $username_seed ) {
+        $username_seed = 'buyer';
+    }
+
+    $username = $username_seed;
+    $counter  = 1;
+    while ( username_exists( $username ) ) {
+        $username = $username_seed . $counter;
+        $counter++;
+    }
+
+    $user_payload = array(
+        'user_login'   => $username,
+        'user_pass'    => wp_generate_password( 20, true, true ),
+        'user_email'   => $email,
+        'display_name' => $display_name,
+        'first_name'   => $first_name,
+        'last_name'    => $last_name,
+        'role'         => get_option( 'default_role', 'subscriber' ),
+    );
+
+    $user_id = wp_insert_user( $user_payload );
+    if ( is_wp_error( $user_id ) || $user_id <= 0 ) {
+        $message = is_wp_error( $user_id ) ? $user_id->get_error_message() : __( 'Unable to create buyer user.', 'bsync-auction' );
+        wp_send_json_error( array( 'message' => $message ), 500 );
+    }
+
+    update_user_meta( $user_id, 'bsync_member_number', $buyer_number );
+
+    if ( '' !== trim( (string) $phone_normalized ) ) {
+        update_user_meta( $user_id, 'bsync_member_main_phone', $phone_normalized );
+    }
+
+    if ( '' !== trim( $address ) ) {
+        update_user_meta( $user_id, 'bsync_member_address', $address );
+    }
+
+    if ( '' !== trim( $birthdate ) ) {
+        update_user_meta( $user_id, 'bsync_member_main_birthdate', $birthdate );
+    }
+
+    $registered_auctions = get_user_meta( $user_id, 'bsync_auction_registered_auctions', true );
+    if ( ! is_array( $registered_auctions ) ) {
+        $registered_auctions = array();
+    }
+    $registered_auctions[] = (int) $auction_id;
+    $registered_auctions   = array_values( array_unique( array_map( 'absint', $registered_auctions ) ) );
+    update_user_meta( $user_id, 'bsync_auction_registered_auctions', $registered_auctions );
+
+    wp_send_json_success(
+        array(
+            'message'      => __( 'Buyer registered successfully.', 'bsync-auction' ),
+            'userId'       => (int) $user_id,
+            'buyerNumber'  => (string) $buyer_number,
+            'username'     => (string) $username,
+            'nextBuyerNumber' => (string) bsync_auction_get_next_available_member_number(),
+            'displayName'  => $display_name,
+            'auctionId'    => (int) $auction_id,
+            'auctionName'  => get_the_title( (int) $auction_id ),
         )
     );
 }

@@ -110,6 +110,26 @@ function bsync_auction_register_admin_menus() {
                 );
             }
         }
+
+        $add_buyer_page_id = (int) get_option( 'bsync_auction_add_buyer_page_id', 0 );
+        if ( $add_buyer_page_id > 0 ) {
+            $add_buyer_url = get_permalink( $add_buyer_page_id );
+            if ( $add_buyer_url ) {
+                add_submenu_page(
+                    $parent_slug,
+                    __( 'Add Buyer', 'bsync-auction' ),
+                    __( 'Add Buyer', 'bsync-auction' ),
+                    'read',
+                    'bsync-auction-add-buyer',
+                    static function() {
+                        $page_id = (int) get_option( 'bsync_auction_add_buyer_page_id', 0 );
+                        if ( $page_id > 0 ) {
+                            echo '<script>window.location.href = ' . wp_json_encode( get_permalink( $page_id ) ) . ';</script>';
+                        }
+                    }
+                );
+            }
+        }
     }
 }
 

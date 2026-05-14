@@ -10,6 +10,36 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
+ * Store last updater error context for admin diagnostics.
+ *
+ * @param string $reason Error reason slug.
+ * @param int    $status HTTP status code.
+ * @param string $details Extra details.
+ * @return void
+ */
+function bsync_auction_set_updater_error( $reason, $status = 0, $details = '' ) {
+    set_transient(
+        'bsync_auction_github_updater_error',
+        array(
+            'reason'  => sanitize_key( (string) $reason ),
+            'status'  => absint( $status ),
+            'details' => sanitize_text_field( (string) $details ),
+            'time'    => time(),
+        ),
+        HOUR_IN_SECONDS
+    );
+}
+
+/**
+ * Clear updater error context.
+ *
+ * @return void
+ */
+function bsync_auction_clear_updater_error() {
+    delete_transient( 'bsync_auction_github_updater_error' );
+}
+
+/**
  * Get repository metadata for update checks.
  *
  * @return array{owner:string,repo:string,branch:string,token:string}
@@ -61,16 +91,19 @@ function bsync_auction_get_latest_github_tag() {
     );
 
     if ( is_wp_error( $response ) ) {
+        bsync_auction_set_updater_error( 'request_failed', 0, $response->get_error_message() );
         return null;
     }
 
     $status = (int) wp_remote_retrieve_response_code( $response );
     if ( 200 !== $status ) {
+        bsync_auction_set_updater_error( 'bad_status', $status, 'GitHub tags API returned non-200.' );
         return null;
     }
 
     $tags = json_decode( (string) wp_remote_retrieve_body( $response ), true );
     if ( ! is_array( $tags ) || empty( $tags ) ) {
+        bsync_auction_set_updater_error( 'empty_tags', 200, 'No release tags found or invalid JSON.' );
         return null;
     }
 
@@ -97,6 +130,13 @@ function bsync_auction_get_latest_github_tag() {
             );
         }
     }
+
+    if ( null === $best ) {
+        bsync_auction_set_updater_error( 'no_semver_tags', 200, 'No semantic tags found.' );
+        return null;
+    }
+
+    bsync_auction_clear_updater_error();
 
     return $best;
 }
@@ -195,3 +235,75 @@ function bsync_auction_enable_auto_updates( $update, $item ) {
     return $update;
 }
 add_filter( 'auto_update_plugin', 'bsync_auction_enable_auto_updates', 10, 2 );
+
+/**
+ * Show updater source/error notice on Plugins screen.
+ *
+ * @return void
+ */
+function bsync_auction_render_updater_notice() {
+    if ( ! current_user_can( 'update_plugins' ) ) {
+        return;
+    }
+
+    $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+    if ( ! $screen || 'plugins' !== $screen->id ) {
+        return;
+    }
+
+    if ( isset( $_GET['bsync_auction_dismiss_github_updater_notice'] ) ) {
+        $nonce = isset( $_GET['_wpnonce'] ) ? sanitize_text_field( (string) wp_unslash( $_GET['_wpnonce'] ) ) : '';
+        if ( wp_verify_nonce( $nonce, 'bsync_auction_dismiss_github_updater_notice' ) ) {
+            update_option( 'bsync_auction_github_updater_notice_dismissed', 1 );
+        }
+    }
+
+    if ( 1 === (int) get_option( 'bsync_auction_github_updater_notice_dismissed', 0 ) ) {
+        return;
+    }
+
+    $config      = bsync_auction_get_repo_config();
+    $repo_handle = $config['owner'] . '/' . $config['repo'];
+    $repo_url    = sprintf( 'https://github.com/%s/%s', $config['owner'], $config['repo'] );
+    $error       = get_transient( 'bsync_auction_github_updater_error' );
+
+    $dismiss_url = add_query_arg(
+        array(
+            'bsync_auction_dismiss_github_updater_notice' => 1,
+        ),
+        admin_url( 'plugins.php' )
+    );
+    $dismiss_url = wp_nonce_url( $dismiss_url, 'bsync_auction_dismiss_github_updater_notice' );
+
+    echo '<div class="notice notice-info"><p>';
+    echo '<strong>' . esc_html__( 'Bsync Auction Updater:', 'bsync-auction' ) . '</strong> ';
+    echo esc_html__( 'Updates are sourced from', 'bsync-auction' ) . ' ';
+    echo '<a href="' . esc_url( $repo_url ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $repo_handle ) . '</a>. ';
+    echo esc_html__( 'Auto-updates are enabled for this plugin.', 'bsync-auction' );
+    echo '</p>';
+
+    if ( is_array( $error ) && ! empty( $error['reason'] ) ) {
+        $status  = isset( $error['status'] ) ? absint( $error['status'] ) : 0;
+        $details = isset( $error['details'] ) ? sanitize_text_field( (string) $error['details'] ) : '';
+
+        echo '<p><strong>' . esc_html__( 'Last GitHub check issue:', 'bsync-auction' ) . '</strong> ';
+
+        if ( 401 === $status || 403 === $status ) {
+            echo esc_html__( 'Authentication failed. Set BSYNC_AUCTION_GITHUB_TOKEN in wp-config.php for private repositories.', 'bsync-auction' );
+        } elseif ( $status > 0 ) {
+            echo esc_html( sprintf( __( 'GitHub API status %d.', 'bsync-auction' ), $status ) );
+        } else {
+            echo esc_html__( 'Request failed while contacting GitHub.', 'bsync-auction' );
+        }
+
+        if ( '' !== $details ) {
+            echo ' ' . esc_html( $details );
+        }
+
+        echo '</p>';
+    }
+
+    echo '<p><a class="button button-secondary" href="' . esc_url( $dismiss_url ) . '">' . esc_html__( 'Dismiss Notice', 'bsync-auction' ) . '</a></p>';
+    echo '</div>';
+}
+add_action( 'admin_notices', 'bsync_auction_render_updater_notice' );

@@ -56,6 +56,7 @@ function bsync_auction_init_plugin() {
         'includes/admin/import.php',
         'includes/admin/buyer-receipts.php',
         'includes/frontend/add-item-form.php',
+        'includes/frontend/add-buyer-form.php',
         'includes/frontend/templates.php',
     );
 
