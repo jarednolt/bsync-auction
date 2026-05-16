@@ -3,7 +3,10 @@
  * Plugin Name: Bsync Auction
  * Description: Auction and auction item management with public catalog pages and manager inline editing tools.
  * Version: 1.0.1
- * Author: Bsync
+ * Author: bsync.me
+ * Author URI: https://github.com/jarednolt/bsync-auction
+ * License: GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: bsync-auction
  */
 
@@ -129,6 +132,30 @@ function bsync_auction_missing_member_notice() {
 /**
  * Block activation if Bsync Member is not active.
  */
+add_filter( 'plugin_action_links_bsync-auction/bsync-auction.php', 'bsync_auction_action_links' );
+function bsync_auction_action_links( $links ) {
+    $url     = wp_nonce_url(
+        add_query_arg( 'bsync_auction_check_update', '1', admin_url( 'plugins.php' ) ),
+        'bsync_auction_check_update'
+    );
+    $links[] = '<a href="' . esc_url( $url ) . '">' . esc_html__( 'Check for Updates', 'bsync-auction' ) . '</a>';
+    return $links;
+}
+
+add_action( 'admin_init', 'bsync_auction_handle_check_update' );
+function bsync_auction_handle_check_update() {
+    if ( ! isset( $_GET['bsync_auction_check_update'] ) ) {
+        return;
+    }
+    check_admin_referer( 'bsync_auction_check_update' );
+    if ( ! current_user_can( 'update_plugins' ) ) {
+        wp_die( esc_html__( 'You do not have permission to update plugins.', 'bsync-auction' ) );
+    }
+    delete_transient( 'update_plugins' );
+    wp_safe_redirect( admin_url( 'plugins.php' ) );
+    exit;
+}
+
 register_activation_hook( BSYNC_AUCTION_PLUGIN_FILE, 'bsync_auction_on_activate' );
 register_deactivation_hook( BSYNC_AUCTION_PLUGIN_FILE, 'bsync_auction_on_deactivate' );
 
