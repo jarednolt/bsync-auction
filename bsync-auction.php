@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Bsync Auction
  * Description: Auction and auction item management with public catalog pages and manager inline editing tools.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Bsync
  * Text Domain: bsync-auction
  */
@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BSYNC_AUCTION_VERSION', '1.0.0' );
+define( 'BSYNC_AUCTION_VERSION', '1.0.1' );
 define( 'BSYNC_AUCTION_PLUGIN_FILE', __FILE__ );
 define( 'BSYNC_AUCTION_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BSYNC_AUCTION_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

@@ -35,7 +35,7 @@ function bsync_auction_can_manage_plugin( $user_id = 0 ) {
         return false;
     }
 
-    return user_can( $user, 'manage_options' );
+    return user_can( $user, 'manage_options' ) || user_can( $user, BSYNC_AUCTION_MANAGE_CAP );
 }
 
 /**
